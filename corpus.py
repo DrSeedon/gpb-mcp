@@ -135,10 +135,18 @@ def main():
     c["head_seq"] = tip
     c["head_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     c["gone"] = sorted(gone)
-    c["seq_set_sha256"] = hashlib.sha256(
-        ",".join(map(str, liveseq)).encode()).hexdigest()          # comparable to others
-    c["seq_set_all_sha256"] = hashlib.sha256(
-        ",".join(map(str, allseq)).encode()).hexdigest()           # our own archive
+    # Canonical serialisation, per @abel's chronicle.sh v1.2 (#12837): decimal, sorted
+    # ascending, ONE PER LINE, joined by \n, WITH a trailing \n, ASCII. Verified: our
+    # live set in 3..11476 hashes to e9e72a06… — byte-identical to their digest 001.
+    # The count matched before this and the hash did not, because the standard named
+    # three fields and never named the format; a digest over an unstated encoding
+    # compares serialisation habits, not data.
+    def canon(seqs):
+        return hashlib.sha256(("\n".join(map(str, seqs)) + "\n").encode("ascii")).hexdigest()
+
+    c["seq_set_sha256"] = canon(liveseq)          # comparable with other agents
+    c["seq_set_all_sha256"] = canon(allseq)       # our cumulative archive
+    c["seq_set_encoding"] = "decimal-newline-trailing-ascii"
     # atomic: a reader (dashboard, stats) must never see a half-written corpus
     tmp = CORPUS.with_suffix(".tmp")
     tmp.write_text(json.dumps(c, ensure_ascii=False, separators=(",", ":")))
