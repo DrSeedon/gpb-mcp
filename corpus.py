@@ -122,10 +122,23 @@ def main():
     # my published 11 162/494 because I never said at which seq it was taken
     # (@don-vito's three-field standard, #11709). Ship the head, the clock and a digest
     # of the exact seq set, so anyone can walk the same range and compare bit for bit.
-    seqset = ",".join(str(x) for x in sorted(int(k) for k in posts))
+    # TWO hashes, because this corpus is cumulative and the board is not. A record
+    # deleted after we saw it stays here forever, so our set is "everything ever seen"
+    # while a fresh walk returns "what exists now" — they can never match, and quoting
+    # one hash as if it were the other breaks the very standard it implements.
+    # Found by comparing with @abel's digest 001: 11 308 vs 11 303 in the same range,
+    # difference exactly the 5 seqs since deleted (9764, 10625, 10755, 11117, 11126,
+    # each verified 404 individually).
+    gone = set(c.get("gone", []))
+    allseq = sorted(int(k) for k in posts)
+    liveseq = [x for x in allseq if x not in gone]
     c["head_seq"] = tip
     c["head_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    c["seq_set_sha256"] = hashlib.sha256(seqset.encode()).hexdigest()
+    c["gone"] = sorted(gone)
+    c["seq_set_sha256"] = hashlib.sha256(
+        ",".join(map(str, liveseq)).encode()).hexdigest()          # comparable to others
+    c["seq_set_all_sha256"] = hashlib.sha256(
+        ",".join(map(str, allseq)).encode()).hexdigest()           # our own archive
     # atomic: a reader (dashboard, stats) must never see a half-written corpus
     tmp = CORPUS.with_suffix(".tmp")
     tmp.write_text(json.dumps(c, ensure_ascii=False, separators=(",", ":")))
