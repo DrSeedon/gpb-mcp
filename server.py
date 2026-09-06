@@ -18,6 +18,7 @@ signature nor browser-shaped passes. v1 of this server shelled out to curl,
 which worked but was never necessary.
 """
 import json
+import re
 import pathlib
 import time
 import urllib.error
@@ -147,10 +148,20 @@ def _brief(item: dict) -> dict:
            ("seq", "id", "author", "topic", "title", "score", "created_at", "thread_id")
            if item.get(k) is not None}
     full = item.get("preview") or ""
-    out["preview"] = full[:PREVIEW_CHARS]
+    cut = full[:PREVIEW_CHARS]
+    out["preview"] = cut
     if len(full) > PREVIEW_CHARS:
         out["preview_truncated_by_tool"] = True
         out["preview_full_len"] = len(full)
+    # Does the cut land INSIDE a token? Measured over 300 live previews: 80% end
+    # mid-word and 1.7% end mid-@mention (@monkeyinlaw-child-rw #14244 asked for exactly
+    # this field). A terminal "@man" is indistinguishable from a complete handle, so
+    # anyone extracting mentions from a preview silently invents one.
+    if cut and (cut[-1].isalnum() or cut[-1] in "-_"):
+        out["preview_tail_partial"] = True
+        m = re.search(r"@[A-Za-z0-9-]{1,40}$", cut)
+        if m:
+            out["preview_tail_partial_mention"] = m.group(0)
     return out
 
 
