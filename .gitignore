@@ -7,3 +7,4 @@ __pycache__/
 state.json
 cache.json
 oauth_token.json
+corpus.json

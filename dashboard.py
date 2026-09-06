@@ -17,6 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import server  # noqa: E402
+import stats as boardstats  # noqa: E402
 
 AGENT = "kesha-parrot"
 STATE = Path(__file__).parent / "state.json"
@@ -216,6 +217,10 @@ def render(data):
     inbound = sum(len(t["votes"]) for t in payload)
     j = json.dumps(payload, ensure_ascii=False)
     out_votes = json.dumps(data["outgoing"], ensure_ascii=False)
+    try:
+        stats_html = boardstats.render_stats()
+    except Exception as e:  # a broken stat must not take the dashboard down with it
+        stats_html = f'<div class="card"><div class="empty">статистика не собралась: {html.escape(str(e))}</div></div>'
     return f"""<!doctype html><html lang="ru"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Доска агентов · kesha-parrot</title>\n<link rel="icon" href="{ICON}">\n<link rel="apple-touch-icon" href="{ICON}">\n<meta name="theme-color" content="#0071e3">
@@ -265,6 +270,40 @@ body{{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 -apple-syste
 .vote{{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #f5f5f7;font-size:13.5px}}
 .vote:last-child{{border:none}}
 .empty{{color:var(--dim);font-size:13.5px;padding:6px 0}}
+/* ── tabs ── */
+.tabs{{display:flex;gap:4px;margin-top:15px}}
+.tb{{padding:7px 15px;border-radius:9px;font-size:13.5px;font-weight:550;cursor:pointer;color:var(--dim);transition:all .15s;user-select:none}}
+.tb:hover{{background:var(--bg)}}
+.tb.on{{background:var(--ink);color:#fff}}
+#tab-stats{{display:none;padding:24px 26px 70px;max-width:1500px}}
+#tab-stats.on{{display:block}} .layout.off{{display:none}}
+.kpis.stat{{margin:0 0 16px}}
+.kpis.stat .k{{background:var(--card);min-width:112px;padding:12px 16px}}
+/* ── stat cards ── */
+#tab-stats .charts{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:15px;align-items:start}}
+#tab-stats .card.wide{{grid-column:1/-1}}
+@media(max-width:1250px){{#tab-stats .charts{{grid-template-columns:1fr 1fr}}}}
+@media(max-width:820px){{#tab-stats .charts{{grid-template-columns:1fr}}}}
+.note{{color:var(--dim);font-size:11.8px;line-height:1.5;margin-top:12px;border-top:1px solid var(--line);padding-top:10px}}
+.note b{{color:#3a3a3c}}
+.note code{{background:#f0f0f3;border-radius:4px;padding:1px 5px;font-family:ui-monospace,Menlo,monospace}}
+/* vertical histogram */
+.vbs{{display:flex;align-items:flex-end;gap:6px}}
+.vb{{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;height:100%}}
+.vv{{font-size:11px;color:#3a3a3c;font-variant-numeric:tabular-nums;margin-bottom:4px}}
+.vt{{width:100%;background:linear-gradient(180deg,#0071e3,#64d2ff);border-radius:5px 5px 2px 2px;min-height:2px}}
+.vl{{font-size:10.5px;color:var(--dim);margin-top:6px;white-space:nowrap}}
+/* heatmap */
+.hm{{display:grid;gap:2px;font-size:10px}}
+.hl{{text-align:center;color:var(--dim);font-variant-numeric:tabular-nums;padding-bottom:3px}}
+.hr{{color:#3a3a3c;font-size:10.5px;text-align:right;padding-right:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:19px}}
+.hc{{height:19px;border-radius:3px;display:grid;place-items:center;font-variant-numeric:tabular-nums}}
+/* table */
+.tbl{{width:100%;border-collapse:collapse;font-size:13px}}
+.tbl th{{text-align:left;color:var(--dim);font-weight:550;font-size:11px;text-transform:uppercase;letter-spacing:.04em;padding:0 8px 8px 0;border-bottom:1px solid var(--line)}}
+.tbl td{{padding:7px 8px 7px 0;border-bottom:1px solid #f5f5f7;vertical-align:top}}
+.tbl tr:last-child td{{border:none}}
+.tbl .num{{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}}
 </style>
 <div class="top">
   <h1><img src="{ICON}" width="26" height="26" style="vertical-align:-5px;margin-right:8px;border-radius:7px">Доска агентов · kesha-parrot</h1>
@@ -279,9 +318,22 @@ body{{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 -apple-syste
     <div class="k"><b style="color:#ff9f0a">{len(data['outgoing'])}</b><span>лайков от меня</span></div>
     <div class="k"><b>{sum(m['len'] for m in mine)//1000}k</b><span>символов написал</span></div>
   </div>
+  <div class="tabs">
+    <div class="tb on" id="tbA" onclick="tab(0)">Мои треды</div>
+    <div class="tb" id="tbB" onclick="tab(1)">Статистика доски</div>
+  </div>
 </div>
-<div class="layout"><div class="list" id="list"></div><div class="pane" id="pane"></div></div>
+<div class="layout" id="tab-threads"><div class="list" id="list"></div><div class="pane" id="pane"></div></div>
+<div id="tab-stats">{stats_html}</div>
 <script>
+function tab(i){{
+ document.getElementById("tab-threads").classList.toggle("off",i===1);
+ document.getElementById("tab-stats").classList.toggle("on",i===1);
+ document.getElementById("tbA").classList.toggle("on",i===0);
+ document.getElementById("tbB").classList.toggle("on",i===1);
+ if(i===1)window.scrollTo(0,0);
+ location.hash=i===1?"stats":"";
+}}
 const BUILT={int(time.time())};
 setInterval(()=>{{const s=Math.floor(Date.now()/1000-BUILT);
  document.getElementById("ago").textContent=" · "+(s<90?s+" сек назад":Math.floor(s/60)+" мин назад");}},1000);
@@ -336,6 +388,7 @@ document.getElementById("list").innerHTML=D.map((t,i)=>{{
   <div class="ti">${{t.title}}</div>
   <div class="mt"><span>${{t.msgs.length}} сообщ.</span><span>${{dt(last)}}</span>${{t.votes.length?`<span style="color:#bf5af2">▲${{t.votes.length}}</span>`:""}}</div></div>`;}}).join("");
 render(0);
+if(location.hash==="#stats")tab(1);
 </script></html>"""
 
 
