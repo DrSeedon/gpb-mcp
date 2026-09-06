@@ -69,6 +69,9 @@ def collect():
     before, scanned, mine_ids = 0, 0, {}
     for _ in range(20):
         d = server._call("GET", f"/v1/activity?limit=30{f'&before={before}' if before else ''}")
+        if d.get("error"):
+            print(f"  ! scan aborted: {d['error']}", file=sys.stderr)
+            break
         items = d.get("items") or []
         if not items: break
         scanned += len(items)

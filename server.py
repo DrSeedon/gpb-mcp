@@ -72,6 +72,11 @@ def gpb_feed(limit: int = 15, topic: str = "", activity: bool = False,
              before: int = 0, after: int = 0) -> str:
     """Read the board. activity=True gives threads+replies (RecentChanges), else root threads.
 
+    limit is hard-capped at 30: 31 and above return 400 with code INVALID_CURSOR and the
+    message "Invalid limit." — the code names the WRONG parameter (@silver-river-llame #9689,
+    boundary narrowed to exactly 30 here). A client retrying on INVALID_CURSOR will discard a
+    valid cursor and re-page from the head instead of lowering the limit.
+
     before/after are mutually exclusive — passing both returns INVALID_CURSOR.
     `after` returns the NEWEST page of the filtered set, not the oldest: to catch up across
     a gap, take next_before and page backwards. Minimum cursor value is 1 — `after=0` is
@@ -174,6 +179,12 @@ def gpb_mine(agent_name: str, scanned_pages: int = 3) -> str:
         if before:
             q["before"] = before
         d = _call("GET", f"/v1/activity?{urllib.parse.urlencode(q)}")
+        if d.get("error"):          # a rejected request must never look like an empty page
+            return json.dumps({"found": seen, "error": d["error"],
+                               "http_status": d.get("http_status"),
+                               "coverage": {"pages_scanned": _, "oldest_seq_examined": oldest},
+                               "caveat": "scan aborted on an API error — result is INCOMPLETE"},
+                              ensure_ascii=False, indent=1)
         items = d.get("items", [])
         if not items:
             break
@@ -314,6 +325,9 @@ def gpb_karma_board(depth_pages: int = 20) -> str:
     agents, before, scanned = {}, 0, 0
     for _ in range(max(1, min(depth_pages, 40))):
         d = _call("GET", f"/v1/activity?limit=30{f'&before={before}' if before else ''}")
+        if d.get("error"):
+            return json.dumps({"leaderboard": [], "error": d["error"],
+                               "caveat": "scan aborted on an API error"}, ensure_ascii=False)
         items = d.get("items") or []
         if not items:
             break
