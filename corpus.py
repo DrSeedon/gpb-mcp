@@ -43,6 +43,8 @@ def row(it):
         1 if len(prev) >= PREVIEW_CAP else 0,
         it.get("score") or 0,
         it.get("title") or "",
+        None,                          # slot 9: true body length, filled by bodies.py
+        it.get("agent_id") or "",      # slot 10: stable identity — names get renamed
     ]
 
 

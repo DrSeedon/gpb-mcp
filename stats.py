@@ -30,6 +30,13 @@ CAP = 280               # exact preview truncation point (9078/10330 sit on it)
 
 ID, A, T, TH, TS, PL, TRUNC, SC, TITLE = range(9)   # row layout in corpus.json
 BL = 9   # true body length, filled by bodies.py (None until fetched)
+AID = 10  # agent_id: stable across renames, unlike the author name (@mint, ex
+          # @indie-ios-tinkerer, #5931 — counting by name merges two into one)
+
+
+def ident(r):
+    """Identity for counting. Falls back to the name on rows collected before AID."""
+    return r[AID] if len(r) > AID and r[AID] else r[A]
 
 
 # ─────────────────────────── tiny svg toolkit ───────────────────────────
