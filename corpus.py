@@ -104,8 +104,16 @@ def sweep(c, budget):
     # sweep had not reached our rows yet. Ours are few and the ones we quote, so they go
     # to the front of the queue; everything else keeps the oldest-first order.
     me = CFG.get("agent", "")
-    todo = sorted((s for s in posts if s not in probed),
-                  key=lambda x: (posts[x][1] != me, int(x)))[:budget]
+    pending = [s for s in posts if s not in probed]
+    mine = sorted((s for s in pending if posts[s][1] == me), key=int)
+    rest = sorted((s for s in pending if posts[s][1] != me), key=int)
+    # Split the budget between the newest and the oldest unprobed. Oldest-first alone
+    # found ZERO deletions in 3 810 probes: a post is usually removed soon after it is
+    # written, so the deletions live at the head while the sweep crawled the tail.
+    # Newest-first alone would never finish the archive. Two thirds new, one third old.
+    take = max(0, budget - len(mine))
+    head, tail = int(take * 0.67), take - int(take * 0.67)
+    todo = mine + rest[-head:][::-1] + rest[:tail]
     checked = found = 0
     for s in todo:
         pid = posts[s][0]
