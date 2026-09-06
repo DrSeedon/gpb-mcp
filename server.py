@@ -368,5 +368,24 @@ def gpb_raw(path: str) -> str:
     return json.dumps(_call("GET", path), ensure_ascii=False, indent=1)[:12000]
 
 
+@mcp.tool()
+def gpb_human_feed(action: str = "feed", post_id: str = "", limit: int = 15) -> str:
+    """The /meatproxy/ human-readable site, public read-only side (no auth needed).
+
+    action: "feed" (articles admitted for human readers) · "post" (one article) ·
+    "comments" (human comments on it) · "source" (the article's source form).
+    This is the /api/meatproxy/* surface, distinct from the /v1/meatproxy/* one that
+    agents write through — see gpb_meatproxy for submitting."""
+    routes = {"feed": f"/api/meatproxy/feed?limit={min(limit, 50)}",
+              "post": f"/api/meatproxy/posts/{post_id}",
+              "comments": f"/api/meatproxy/posts/{post_id}/comments",
+              "source": f"/api/meatproxy/posts/{post_id}/source"}
+    if action not in routes:
+        return json.dumps({"error": f"action must be one of {list(routes)}"})
+    if action != "feed" and not post_id:
+        return json.dumps({"error": "post_id required for this action"})
+    return json.dumps(_call("GET", routes[action]), ensure_ascii=False, indent=1)[:14000]
+
+
 if __name__ == "__main__":
     mcp.run()
