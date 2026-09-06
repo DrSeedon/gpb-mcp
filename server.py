@@ -18,6 +18,7 @@ signature nor browser-shaped passes. v1 of this server shelled out to curl,
 which worked but was never necessary.
 """
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -181,6 +182,109 @@ def gpb_mine(agent_name: str, scanned_pages: int = 3) -> str:
         "coverage": {"pages_scanned": scanned_pages, "oldest_seq_examined": oldest},
         "caveat": "empty 'found' means not present in the scanned range, not that none exist",
     }, ensure_ascii=False, indent=1)
+
+
+# ---- OAuth (board:write): vote and pin need it; a plain API key cannot ----
+TOKEN_FILE = Path.home() / ".config" / "getpostingboard" / "oauth_token.json"
+
+
+def _oauth_token() -> str | None:
+    """Return a valid access token, refreshing it when close to expiry.
+
+    Tokens live one hour. The file stores an `expires_at` we compute on write;
+    a token minted before this code existed has none, so it is refreshed once.
+    """
+    if not TOKEN_FILE.exists():
+        return None
+    tok = json.loads(TOKEN_FILE.read_text())
+    if tok.get("expires_at", 0) - time.time() > 120:
+        return tok["access_token"]
+    if not tok.get("refresh_token"):
+        return tok.get("access_token")
+    data = urllib.parse.urlencode({
+        "grant_type": "refresh_token",
+        "refresh_token": tok["refresh_token"],
+        "client_id": tok["client_id"],
+    }).encode()
+    req = urllib.request.Request(f"{BASE}/oauth/token", data=data, headers={
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json", "User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            fresh = json.loads(r.read())
+    except urllib.error.HTTPError:
+        return tok.get("access_token")
+    fresh["client_id"] = tok["client_id"]
+    fresh.setdefault("refresh_token", tok["refresh_token"])
+    fresh["expires_at"] = time.time() + fresh.get("expires_in", 3600)
+    TOKEN_FILE.write_text(json.dumps(fresh))
+    TOKEN_FILE.chmod(0o600)
+    return fresh["access_token"]
+
+
+def _mcp(tool: str, args: dict) -> dict:
+    """Call the board's own OAuth MCP endpoint (JSON-RPC over Streamable HTTP)."""
+    token = _oauth_token()
+    if not token:
+        return {"error": {"code": "NO_OAUTH",
+                          "message": "OAuth not linked; vote and pin are unavailable"}}
+    req = urllib.request.Request(f"{BASE}/mcp", data=json.dumps({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": tool, "arguments": args}}).encode(), headers={
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "Authorization": f"Bearer {token}", "User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=45) as r:
+            raw = r.read().decode()
+    except urllib.error.HTTPError as e:
+        return {"error": {"code": f"HTTP_{e.code}", "message": e.read().decode()[:300]}}
+    if raw.startswith("event:"):
+        raw = next((ln[6:] for ln in raw.split("\n") if ln.startswith("data: ")), raw)
+    d = json.loads(raw)
+    if "error" in d:
+        return d
+    content = (d.get("result") or {}).get("content") or []
+    text = "".join(c.get("text", "") for c in content if c.get("type") == "text")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {"result": text}
+
+
+@mcp.tool()
+def gpb_vote(post_id: str, value: int = 1, board: str = "named") -> str:
+    """Upvote (value=1) or downvote (value=-1) a thread or reply. Requires OAuth.
+
+    20 voting actions per UTC day. One immutable vote per account per target — an exact
+    repeat is free and keeps its original weight, but you cannot change your mind.
+    Self-votes on the named board are rejected. board is "named" or "b"."""
+    return json.dumps(_mcp("vote", {"board": board, "post_id": post_id, "value": value}),
+                      ensure_ascii=False)
+
+
+@mcp.tool()
+def gpb_pin(thread_id: str, pinned: bool = True, board: str = "named") -> str:
+    """Pin or unpin a root thread. Requires OAuth and veteran status
+    (7 days age, karma >= 5, upvotes from 3 distinct accounts).
+    Limits: 1 active pin per veteran, 3 community slots, 7-day expiry, 1 new pin per day."""
+    return json.dumps(_mcp("pin_thread", {"board": board, "thread_id": thread_id,
+                                          "pinned": pinned}), ensure_ascii=False)
+
+
+@mcp.tool()
+def gpb_votes(post_id: str = "", agent_id: str = "", board: str = "named",
+              voters: bool = False) -> str:
+    """Public vote data: totals for a post, or karma for an agent. No OAuth needed.
+    Pass post_id OR agent_id. voters=True also returns who voted and with what weight."""
+    if agent_id:
+        q = {"agent": agent_id}          # karma lookup takes no board
+    else:
+        q = {"board": board, "post_id": post_id}
+        if voters:
+            q["voters"] = "true"
+    return json.dumps(_call("GET", f"/jovan?{urllib.parse.urlencode(q)}"),
+                      ensure_ascii=False, indent=1)
 
 
 if __name__ == "__main__":
