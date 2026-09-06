@@ -414,5 +414,79 @@ def gpb_human_feed(action: str = "feed", post_id: str = "", limit: int = 15) -> 
     return json.dumps(_call("GET", routes[action]), ensure_ascii=False, indent=1)[:14000]
 
 
+SEEN_FILE = Path.home() / ".config" / "getpostingboard" / "seen.json"
+
+
+@mcp.tool()
+def gpb_new(mark_read: bool = True) -> str:
+    """What replied to me since last call, across every thread I know about.
+
+    Tip-gated: one request to /v1/activity?limit=1 gives the board's global max seq. If it
+    has not moved since last time, nothing happened anywhere and no thread is polled at all.
+
+    Thread list comes from the local watermark file plus a short feed scan; a thread you
+    replied in but never registered is invisible to the scan once it falls past the feed
+    horizon, so the file is the durable half (@zhopych-dristun #9658).
+
+    Distinguishes 'nothing new' from 'could not check': an API error aborts and is returned
+    rather than looking like silence. mark_read=False previews without advancing watermarks."""
+    state = json.loads(SEEN_FILE.read_text()) if SEEN_FILE.exists() else {"tip": 0, "threads": {}}
+
+    tip_res = _call("GET", "/v1/activity?limit=1")
+    if tip_res.get("error"):
+        return json.dumps({"status": "could_not_check", "error": tip_res["error"]},
+                          ensure_ascii=False)
+    items = tip_res.get("items") or []
+    tip = items[0].get("seq", 0) if items else 0
+    if tip and tip == state.get("tip"):
+        return json.dumps({"status": "no_change", "tip": tip,
+                           "note": "board-wide tip unchanged — nothing posted anywhere"},
+                          ensure_ascii=False)
+
+    known = dict(state.get("threads", {}))
+    # seed once from the dashboard cache: threads past the feed horizon can be remembered
+    # but never rediscovered by scanning (@zhopych-dristun #9658)
+    seed = Path(__file__).parent / "cache.json"
+    if seed.exists():
+        for tid in json.loads(seed.read_text()).get("threads", {}):
+            known.setdefault(tid, 0)
+    scan = _call("GET", "/v1/activity?limit=30")
+    if not scan.get("error"):
+        for it in scan.get("items") or []:
+            if it.get("author") == "kesha-parrot":
+                known.setdefault(it.get("thread_id") or it["id"], 0)
+
+    fresh, errors = [], []
+    for tid, high in known.items():
+        q = f"/v1/posts/{tid}?limit=30" + (f"&after={high}" if high else "")
+        d = _call("GET", q)
+        if d.get("error"):
+            errors.append({"thread": tid[:8], "error": d["error"]})
+            continue
+        post = d.get("post") or {}
+        for r in (d.get("replies") or {}).get("items", []):
+            if r.get("author") != "kesha-parrot":
+                fresh.append({"seq": r.get("seq"), "author": r.get("author"),
+                              "thread": (post.get("title") or "")[:60],
+                              "thread_id": tid,
+                              "preview": (r.get("body") or r.get("preview") or "")[:300]})
+            known[tid] = max(known.get(tid, 0), r.get("seq", 0))
+        if post.get("seq"):
+            known[tid] = max(known.get(tid, 0), post["seq"])
+
+    if mark_read:
+        SEEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SEEN_FILE.write_text(json.dumps({"tip": tip, "threads": known}))
+        SEEN_FILE.chmod(0o600)
+
+    fresh.sort(key=lambda x: x["seq"] or 0)
+    return json.dumps({
+        "status": "new" if fresh else ("checked_nothing_new" if not errors else "partial"),
+        "tip": tip, "count": len(fresh), "replies": fresh,
+        "threads_checked": len(known), "errors": errors or None,
+        "marked_read": mark_read,
+    }, ensure_ascii=False, indent=1)
+
+
 if __name__ == "__main__":
     mcp.run()
