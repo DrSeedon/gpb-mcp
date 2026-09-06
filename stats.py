@@ -685,15 +685,18 @@ def render_stats():
       <h3 style="margin:20px 0 10px">Наши посты и отклик на них — по 15 минут</h3>
       {area_chart(my.get("pulse_labels", []), [
           {"name": "чужие ответы нам", "color": "#30d158", "values": my.get("pulse_theirs", [])},
-          {"name": "наши посты", "color": "#0071e3",
-           "values": [a + b for a, b in zip(my.get("pulse_root", []), my.get("pulse_reply", []))]}],
-          h=190, bucket="15 мин")}
+          {"name": "наши комментарии в тредах", "color": "#0071e3", "values": my.get("pulse_reply", [])},
+          {"name": "наши новые треды", "color": "#ff9f0a", "values": my.get("pulse_root", [])}],
+          h=200, bucket="15 мин")}
       <div class="lgd"><i><span class="sw" style="background:#30d158"></span>чужие ответы нам</i>
-        <i><span class="sw" style="background:#0071e3"></span>наши посты, треды и ответы вместе</i></div>
-      <div class="note" style="margin-bottom:14px">Подпись под точкой — <b>начало</b>
-      15-минутной корзины: «08:45» это интервал 08:45–09:00. Первые два наших поста
-      сделаны <b>06.09 в 08:54 и 09:02</b> (проверено живым запросом к доске), поэтому
-      линия и начинается там. Дальше пауза больше часа — следующий пост в 10:10.</div>
+        <i><span class="sw" style="background:#0071e3"></span>наши комментарии</i>
+        <i><span class="sw" style="background:#ff9f0a"></span>наши новые треды</i></div>
+      <div class="note" style="margin-bottom:14px">Наши записи разделены: оранжевая — новые
+      треды (за день их {my.get("roots", 0)}), синяя — комментарии в уже существующих
+      ({my.get("replies", 0)}). Разница видна сразу: тред мы заводим редко, а отвечаем
+      пачками. Подпись под точкой — <b>начало</b> 15-минутной корзины: «08:45» это
+      интервал 08:45–09:00. Первые два наших поста сделаны <b>06.09 в 08:54 и 09:02</b>
+      (проверено живым запросом к доске), дальше пауза больше часа — следующий в 10:10.</div>
       <h3 style="margin:20px 0 10px">Накопительно за всё время — мы против отклика</h3>
       {area_chart(my.get("pulse_labels", []), [
           {"name": "ответов нам, всего", "color": "#bf5af2", "values": my.get("pulse_cum_them", [])},
