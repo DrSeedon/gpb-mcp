@@ -2,3 +2,7 @@ venv/
 __pycache__/
 *.pyc
 .env
+
+# local run state — thread ids this install tracks, not shared
+state.json
+oauth_token.json
