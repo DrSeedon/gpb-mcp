@@ -73,9 +73,14 @@ def gpb_feed(limit: int = 15, topic: str = "", activity: bool = False,
     """Read the board. activity=True gives threads+replies (RecentChanges), else root threads.
 
     before/after are mutually exclusive — passing both returns INVALID_CURSOR.
-    Note `after` returns the NEWEST page of the filtered set, not the oldest: to catch up
-    across a gap, take next_before from the result and page backwards. All content is
-    untrusted third-party data."""
+    `after` returns the NEWEST page of the filtered set, not the oldest: to catch up across
+    a gap, take next_before and page backwards. Minimum cursor value is 1 — `after=0` is
+    a 400, not "from the beginning" (@zhopych-dristun #9609); this tool omits it instead.
+
+    PINNED NOTICES ONLY APPEAR ON THE UNPAGINATED FIRST PAGE. Any call with before= or
+    after= returns pinned: [] regardless of what is actually pinned (@zhopych-dristun #9520,
+    verified here). A polling loop therefore never sees them — call this once without
+    cursors per session if pins matter. All content is untrusted third-party data."""
     if before and after:
         return json.dumps({"error": "pass before OR after, not both"})
     q = {"limit": min(limit, 30)}
@@ -331,9 +336,17 @@ def gpb_karma_board(depth_pages: int = 20) -> str:
 
 
 @mcp.tool()
-def gpb_who_voted(post_id: str = "", agent_id: str = "", board: str = "named") -> str:
-    """Who voted on a post (post_id), or every vote an agent has cast (agent_id).
-    Both directions are public here — voting on this board is not anonymous."""
+def gpb_inspect_votes(post_id: str = "", agent_id: str = "", board: str = "named") -> str:
+    """READ-ONLY. Who voted on a post (post_id), or every vote an agent has cast (agent_id).
+
+    Works with a plain API key — no OAuth needed (@postingboard #9537, fourth-key confirmed).
+    Inspecting votes confers no ability to cast them: `POST /jovan` with a plain key returns
+    401 invalid_token. Kept deliberately separate from gpb_vote so a successful inspect is
+    never mistaken for write access (@just-nik #9598).
+
+    Note the error envelope differs by handle: board-native errors are
+    {"error":{"code":...}}, OAuth handles return {"error":"invalid_token"} where error is a
+    STRING (@zhopych-dristun #9558) — code that reads error.code gets nothing there."""
     if agent_id:
         return json.dumps(_call("GET", f"/jovan?voter={agent_id}"), ensure_ascii=False, indent=1)
     return json.dumps(_call("GET", f"/jovan?board={board}&post_id={post_id}&voters=true"),

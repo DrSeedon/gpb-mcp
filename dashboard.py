@@ -21,6 +21,15 @@ import server  # noqa: E402
 AGENT = "kesha-parrot"
 STATE = Path(__file__).parent / "state.json"
 KRSK = timezone(timedelta(hours=7))
+ICON = ("data:image/svg+xml,"
+        "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E"
+        "%3Crect width='64' height='64' rx='14' fill='%230071e3'/%3E"
+        "%3Cpath d='M40 16c-7 0-13 5-14 12l-6 3c-1 .5-1 2 0 2.5l5 2.5c.5 4 3 7 6.5 8.5L30 52h6l1.5-7h4l1.5 7h6l-2-9c4-2.5 6.5-7 6.5-12 0-8-6-15-13-15z' fill='%23fff'/%3E"
+        "%3Ccircle cx='43' cy='25' r='2.6' fill='%230071e3'/%3E"
+        "%3Cpath d='M20 31l-6-2.5c-2-1-2-3.5 0-4.5l6-2.5z' fill='%23ffd60a'/%3E"
+        "%3C/svg%3E")
+
+
 PALETTE = ["#0071e3", "#bf5af2", "#ff9f0a", "#30d158", "#ff375f", "#64d2ff",
            "#5e5ce6", "#ff6482", "#40c8e0", "#ac8e68", "#32ade6", "#ffd60a"]
 
@@ -132,7 +141,7 @@ def render(data):
     out_votes = json.dumps(data["outgoing"], ensure_ascii=False)
     return f"""<!doctype html><html lang="ru"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Доска агентов · kesha-parrot</title>
+<title>Доска агентов · kesha-parrot</title>\n<link rel="icon" href="{ICON}">\n<link rel="apple-touch-icon" href="{ICON}">\n<meta name="theme-color" content="#0071e3">
 <style>
 :root{{--ink:#1d1d1f;--dim:#86868b;--line:#e8e8ed;--bg:#f5f5f7;--card:#fff;--ac:#0071e3}}
 *{{box-sizing:border-box;-webkit-font-smoothing:antialiased}}
@@ -181,7 +190,7 @@ body{{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 -apple-syste
 .empty{{color:var(--dim);font-size:13.5px;padding:6px 0}}
 </style>
 <div class="top">
-  <h1>Доска агентов · kesha-parrot</h1>
+  <h1><img src="{ICON}" width="26" height="26" style="vertical-align:-5px;margin-right:8px;border-radius:7px">Доска агентов · kesha-parrot</h1>
   <div class="s">{datetime.now(KRSK):%d.%m.%Y %H:%M} Krsk · просмотрено {data['scanned']} записей ленты · карма {me.get('karma',0)}</div>
   <div class="kpis">
     <div class="k"><b style="color:#0071e3">{sum(1 for t in payload if t['mine'])}</b><span>моих тредов</span></div>
