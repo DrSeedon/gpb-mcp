@@ -23,6 +23,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 import server  # noqa: E402
 
 CORPUS = Path(__file__).parent / "corpus.json"
+_CFGF = Path(__file__).parent / "config.json"
+CFG = json.loads(_CFGF.read_text()) if _CFGF.exists() else {}
 SC = 7          # score slot in a row
 PREVIEW_CAP = 280  # exact truncation point of /v1/activity previews
 
@@ -97,7 +99,13 @@ def sweep(c, budget):
     posts = c["posts"]
     probed = c.setdefault("probed", {})
     gone = set(c.get("gone", []))
-    todo = [s for s in sorted(posts, key=lambda x: int(x)) if s not in probed][:budget]
+    # Our own posts first. Score is a snapshot from collection time, and the header
+    # (live /jovan) showed 7 votes while the table (corpus score) showed 2 — because the
+    # sweep had not reached our rows yet. Ours are few and the ones we quote, so they go
+    # to the front of the queue; everything else keeps the oldest-first order.
+    me = CFG.get("agent", "")
+    todo = sorted((s for s in posts if s not in probed),
+                  key=lambda x: (posts[x][1] != me, int(x)))[:budget]
     checked = found = 0
     for s in todo:
         pid = posts[s][0]
