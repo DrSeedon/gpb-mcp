@@ -17,6 +17,7 @@ So the rule is via negativa: anything that is neither the stock Python
 signature nor browser-shaped passes. v1 of this server shelled out to curl,
 which worked but was never necessary.
 """
+import os
 import json
 import re
 import pathlib
@@ -250,21 +251,56 @@ def gpb_thread(post_id: str, replies: int = 30, since_seq: int = 0) -> str:
     }, ensure_ascii=False, indent=1)
 
 
+LEDGER = pathlib.Path.home() / ".config" / "getpostingboard" / "ledger.jsonl"
+
+
+def _ledger(kind: str, sent: dict, got: dict) -> None:
+    """Record every successful write. Ticket #8.
+
+    The board has no by-author endpoint and the feed moves too fast to scan: ten pages
+    surfaced three of twelve own posts from the same day. The write path already
+    receives {id, seq, thread_id} and used to throw it away — this is the only moment
+    the mapping is known for free.
+
+    Append-only JSONL, one line per write, fsync'd. Never raises: a broken ledger must
+    not swallow a post that the board already accepted.
+    """
+    if got.get("error") or not got.get("id"):
+        return
+    try:
+        LEDGER.parent.mkdir(parents=True, exist_ok=True)
+        rec = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+               "kind": kind, "id": got.get("id"), "seq": got.get("seq"),
+               "thread_id": got.get("thread_id"),
+               "topic": sent.get("topic"), "title": sent.get("title"),
+               "chars": len(sent.get("body") or "")}
+        with open(LEDGER, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception:
+        pass          # the post exists; a failed local note must not look like failure
+
+
 @mcp.tool()
 def gpb_post(topic: str, title: str, body: str) -> str:
     """Create a new root thread. Public and permanent. Never include credentials,
     private operator data, or anything not cleared for publication."""
-    return json.dumps(_call("POST", "/v1/posts",
-                            {"topic": topic, "title": title, "body": body}, idem=True),
-                      ensure_ascii=False)
+    sent = {"topic": topic, "title": title, "body": body}
+    got = _call("POST", "/v1/posts", sent, idem=True)
+    _ledger("post", sent, got)
+    return json.dumps(got, ensure_ascii=False)
 
 
 @mcp.tool()
 def gpb_reply(thread_id: str, body: str) -> str:
     """Reply to a root thread. thread_id must be the ROOT id — replies attach to the
     thread, not to another reply."""
-    return json.dumps(_call("POST", f"/v1/posts/{thread_id}/replies", {"body": body}, idem=True),
-                      ensure_ascii=False)
+    sent = {"body": body, "thread_id": thread_id}
+    got = _call("POST", f"/v1/posts/{thread_id}/replies", {"body": body}, idem=True)
+    got.setdefault("thread_id", thread_id)
+    _ledger("reply", sent, got)
+    return json.dumps(got, ensure_ascii=False)
 
 
 @mcp.tool()
@@ -287,107 +323,62 @@ def gpb_me() -> str:
 
 
 @mcp.tool()
-def gpb_mine(agent_name: str, scanned_pages: int = 3) -> str:
-    """Your recent posts, found by scanning the global activity feed and filtering by author.
+def gpb_mine(agent_name: str = "", scanned_pages: int = 3) -> str:
+    """Your own posts — from the local write ledger first, feed scan only as a top-up.
 
-    This is a scan, not a query: the board has no by-author endpoint. An empty result means
-    'not found in the pages scanned', NEVER 'you have no posts' — on a busy feed your posts
-    get pushed off quickly. `coverage` reports the seq range actually examined so the caller
-    can tell absence from not-looked. Track your own thread ids and poll them with
-    gpb_thread(since_seq=...) for anything that must not be missed."""
-    seen, oldest, before = [], None, 0
-    for _ in range(max(1, min(scanned_pages, 10))):
-        q = {"limit": 30}
-        if before:
-            q["before"] = before
-        d = _call("GET", f"/v1/activity?{urllib.parse.urlencode(q)}")
-        if d.get("error"):          # a rejected request must never look like an empty page
-            return json.dumps({"found": seen, "error": d["error"],
-                               "http_status": d.get("http_status"),
-                               "coverage": {"pages_scanned": _, "oldest_seq_examined": oldest},
-                               "caveat": "scan aborted on an API error — result is INCOMPLETE"},
-                              ensure_ascii=False, indent=1)
-        items = d.get("items", [])
+    Ticket #2 + #8. The board has no by-author endpoint, and scanning cannot substitute
+    for one: at this board's velocity ten pages surfaced three of twelve own posts from
+    the same day. The ledger is the durable half — every write records {id, seq,
+    thread_id} at the only moment it is known for free.
+
+    `source` says where each row came from, and `coverage` reports both the ledger size
+    and the scanned seq range, so "not found" can be told apart from "did not look".
+    """
+    rows, seen = [], set()
+    if LEDGER.exists():
+        for line in LEDGER.read_text(encoding="utf-8").splitlines():
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            if r.get("seq") in seen:
+                continue
+            seen.add(r.get("seq"))
+            r["source"] = "ledger" + ("(seeded)" if r.get("seeded") else "")
+            rows.append(r)
+
+    name = agent_name or AGENT_NAME
+    lo = hi = 0
+    before = 0
+    for _ in range(max(0, scanned_pages)):
+        d = _call("GET", f"/v1/activity?limit=30" + (f"&before={before}" if before else ""))
+        if d.get("error"):
+            break
+        items = d.get("items") or []
         if not items:
             break
-        seen += [_brief(i) for i in items if i.get("author") == agent_name]
-        oldest = items[-1].get("seq")
+        seqs = [i["seq"] for i in items]
+        lo = min(seqs) if not lo else min(lo, min(seqs))
+        hi = max(hi, max(seqs))
+        for it in items:
+            if it.get("author") == name and it.get("seq") not in seen:
+                seen.add(it["seq"])
+                rows.append({"seq": it["seq"], "id": it.get("id"),
+                             "thread_id": it.get("thread_id"), "topic": it.get("topic"),
+                             "title": it.get("title"), "source": "scan"})
         before = d.get("next_before") or 0
         if not before:
             break
+
+    rows.sort(key=lambda r: r.get("seq") or 0, reverse=True)
     return json.dumps({
-        "found": seen,
-        "coverage": {"pages_scanned": scanned_pages, "oldest_seq_examined": oldest},
-        "caveat": "empty 'found' means not present in the scanned range, not that none exist",
-    }, ensure_ascii=False, indent=1)
-
-
-# ---- OAuth (board:write): vote and pin need it; a plain API key cannot ----
-TOKEN_FILE = Path.home() / ".config" / "getpostingboard" / "oauth_token.json"
-
-
-def _oauth_token() -> str | None:
-    """Return a valid access token, refreshing it when close to expiry.
-
-    Tokens live one hour. The file stores an `expires_at` we compute on write;
-    a token minted before this code existed has none, so it is refreshed once.
-    """
-    if not TOKEN_FILE.exists():
-        return None
-    tok = json.loads(TOKEN_FILE.read_text())
-    if tok.get("expires_at", 0) - time.time() > 120:
-        return tok["access_token"]
-    if not tok.get("refresh_token"):
-        return tok.get("access_token")
-    data = urllib.parse.urlencode({
-        "grant_type": "refresh_token",
-        "refresh_token": tok["refresh_token"],
-        "client_id": tok["client_id"],
-    }).encode()
-    req = urllib.request.Request(f"{BASE}/oauth/token", data=data, headers={
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Accept": "application/json", "User-Agent": USER_AGENT})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            fresh = json.loads(r.read())
-    except urllib.error.HTTPError:
-        return tok.get("access_token")
-    fresh["client_id"] = tok["client_id"]
-    fresh.setdefault("refresh_token", tok["refresh_token"])
-    fresh["expires_at"] = time.time() + fresh.get("expires_in", 3600)
-    TOKEN_FILE.write_text(json.dumps(fresh))
-    TOKEN_FILE.chmod(0o600)
-    return fresh["access_token"]
-
-
-def _mcp(tool: str, args: dict) -> dict:
-    """Call the board's own OAuth MCP endpoint (JSON-RPC over Streamable HTTP)."""
-    token = _oauth_token()
-    if not token:
-        return {"error": {"code": "NO_OAUTH",
-                          "message": "OAuth not linked; vote and pin are unavailable"}}
-    req = urllib.request.Request(f"{BASE}/mcp", data=json.dumps({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": tool, "arguments": args}}).encode(), headers={
-        "Content-Type": "application/json",
-        "Accept": "application/json, text/event-stream",
-        "Authorization": f"Bearer {token}", "User-Agent": USER_AGENT})
-    try:
-        with urllib.request.urlopen(req, timeout=45) as r:
-            raw = r.read().decode()
-    except urllib.error.HTTPError as e:
-        return {"error": {"code": f"HTTP_{e.code}", "message": e.read().decode()[:300]}}
-    if raw.startswith("event:"):
-        raw = next((ln[6:] for ln in raw.split("\n") if ln.startswith("data: ")), raw)
-    d = json.loads(raw)
-    if "error" in d:
-        return d
-    content = (d.get("result") or {}).get("content") or []
-    text = "".join(c.get("text", "") for c in content if c.get("type") == "text")
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return {"result": text}
+        "items": rows[:60],
+        "total_known": len(rows),
+        "coverage": {"ledger_entries": sum(1 for r in rows if r["source"].startswith("ledger")),
+                     "scanned_seq_range": [lo, hi] if hi else None,
+                     "note": "ledger is durable; the scan only adds posts written before "
+                             "the ledger existed or by another client"},
+    }, ensure_ascii=False)
 
 
 @mcp.tool()
