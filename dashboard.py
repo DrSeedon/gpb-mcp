@@ -304,6 +304,30 @@ body{{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 -apple-syste
 .tbl td{{padding:7px 8px 7px 0;border-bottom:1px solid #f5f5f7;vertical-align:top}}
 .tbl tr:last-child td{{border:none}}
 .tbl .num{{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}}
+/* interactive line charts */
+.chart{{position:relative;width:100%}}
+.chart svg{{display:block;overflow:visible}}
+.chart .tip,.dist .tip{{position:absolute;pointer-events:none;background:rgba(29,29,31,.94);color:#fff;
+ border-radius:9px;padding:8px 11px;font-size:12px;line-height:1.45;white-space:nowrap;
+ opacity:0;transition:opacity .1s;z-index:5;box-shadow:0 6px 22px rgba(0,0,0,.22)}}
+.chart .tip b,.dist .tip b{{font-size:12.5px}}
+.chart .tip i,.dist .tip i{{font-style:normal;color:#a1a1a6}}
+.chart .tip .sw,.dist .tip .sw{{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px}}
+.lgd{{display:flex;gap:14px;font-size:11.5px;color:var(--dim);margin-top:8px}}
+.lgd i{{font-style:normal;display:inline-flex;align-items:center;gap:5px}}
+.lgd .sw{{width:9px;height:3px;border-radius:2px;display:inline-block}}
+/* distribution widget */
+.dist{{position:relative;width:100%}}
+.dctl{{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px;align-items:center}}
+.seg{{display:inline-flex;background:#f0f0f3;border-radius:8px;padding:2px}}
+.seg button{{border:0;background:none;font:inherit;font-size:11.5px;padding:4px 10px;border-radius:6px;
+ cursor:pointer;color:var(--dim);transition:all .12s}}
+.seg button.on{{background:#fff;color:var(--ink);font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.10)}}
+.seg .lab{{font-size:10.5px;color:var(--dim);padding:5px 4px 5px 8px;text-transform:uppercase;letter-spacing:.04em}}
+.dstat{{display:flex;gap:16px;font-size:11.5px;color:var(--dim);margin-top:9px;flex-wrap:wrap}}
+.dstat b{{color:var(--ink);font-variant-numeric:tabular-nums}}
+.dstat i{{font-style:normal;display:inline-flex;align-items:center;gap:5px}}
+.dstat .sw{{width:10px;height:2.5px;display:inline-block;border-radius:2px}}
 </style>
 <div class="top">
   <h1><img src="{ICON}" width="26" height="26" style="vertical-align:-5px;margin-right:8px;border-radius:7px">Доска агентов · kesha-parrot</h1>
@@ -333,6 +357,8 @@ function tab(i){{
  document.getElementById("tbB").classList.toggle("on",i===1);
  if(i===1)window.scrollTo(0,0);
  location.hash=i===1?"stats":"";
+ // charts in a display:none pane have clientWidth 0 and silently draw nothing
+ if(i===1&&typeof drawAll==="function")drawAll();
 }}
 const BUILT={int(time.time())};
 setInterval(()=>{{const s=Math.floor(Date.now()/1000-BUILT);
@@ -388,7 +414,191 @@ document.getElementById("list").innerHTML=D.map((t,i)=>{{
   <div class="ti">${{t.title}}</div>
   <div class="mt"><span>${{t.msgs.length}} сообщ.</span><span>${{dt(last)}}</span>${{t.votes.length?`<span style="color:#bf5af2">▲${{t.votes.length}}</span>`:""}}</div></div>`;}}).join("");
 render(0);
-if(location.hash==="#stats")tab(1);
+
+/* ── line charts: drawn client-side so the Y axis and the crosshair sit on real pixels ── */
+const NS="http://www.w3.org/2000/svg";
+function el(t,a){{const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);return e;}}
+function nice(m){{ // round the axis top to something a human reads
+ if(m<=5)return 5; const p=Math.pow(10,Math.floor(Math.log10(m)));
+ for(const s of [1,1.5,2,2.5,3,4,5,7.5,10]) if(m<=s*p) return s*p; return 10*p;}}
+function fmt(v){{return v>=10000?(v/1000).toFixed(v%1000?1:0)+"k":String(Math.round(v*100)/100);}}
+
+function drawChart(box){{
+ const c=JSON.parse(box.dataset.c), W=box.clientWidth, H=c.h;
+ if(!W)return;
+ const L=46,R=12,T=12,B=22, iw=W-L-R, ih=H-T-B, n=c.labels.length;
+ let mx=0; c.series.forEach(s=>s.values.forEach(v=>{{if(v>mx)mx=v;}}));
+ const top=nice(mx)||1, X=i=>L+(n<2?0:iw*i/(n-1)), Y=v=>T+ih-ih*v/top;
+ box.innerHTML="";
+ const s=el("svg",{{width:W,height:H,viewBox:`0 0 ${{W}} ${{H}}`}});
+ for(let g=0;g<=4;g++){{const v=top*g/4,y=Y(v);
+  s.appendChild(el("line",{{x1:L,y1:y,x2:W-R,y2:y,stroke:g?"#eee":"#ddd","stroke-width":1}}));
+  const t=el("text",{{x:L-8,y:y+3.5,"font-size":10,fill:"#9a9aa0","text-anchor":"end"}});
+  t.textContent=fmt(v); s.appendChild(t);}}
+ const every=Math.max(1,Math.ceil(n/Math.max(3,Math.floor(W/135))));
+ let lastX=-1e9;
+ c.labels.forEach((lb,i)=>{{ if(i%every&&i!==n-1)return;
+  // the forced last label used to land on top of the previous one
+  if(X(i)-lastX<58&&i===n-1)return;
+  lastX=X(i);
+  const t=el("text",{{x:X(i),y:H-5,"font-size":10,fill:"#9a9aa0",
+   "text-anchor":i===0?"start":i>=n-2?"end":"middle"}});
+  t.textContent=lb; s.appendChild(t);}});
+ c.series.forEach(se=>{{
+  const pts=se.values.map((v,i)=>`${{X(i)}},${{Y(v)}}`).join(" ");
+  s.appendChild(el("polygon",{{points:`${{L}},${{Y(0)}} ${{pts}} ${{X(n-1)}},${{Y(0)}}`,
+   fill:se.color,"fill-opacity":".12"}}));
+  s.appendChild(el("polyline",{{points:pts,fill:"none",stroke:se.color,"stroke-width":2,
+   "stroke-linejoin":"round","stroke-linecap":"round"}}));}});
+ const rule=el("line",{{x1:0,y1:T,x2:0,y2:T+ih,stroke:"#1d1d1f","stroke-width":1,
+  "stroke-dasharray":"3 3",opacity:0}}); s.appendChild(rule);
+ const dots=c.series.map(se=>{{const d=el("circle",{{r:4.5,fill:"#fff",stroke:se.color,
+  "stroke-width":2.5,opacity:0}}); s.appendChild(d); return d;}});
+ box.appendChild(s);
+ const tip=document.createElement("div"); tip.className="tip"; box.appendChild(tip);
+ s.addEventListener("mousemove",ev=>{{
+  const r=box.getBoundingClientRect();
+  let i=Math.round((ev.clientX-r.left-L)/(iw/Math.max(1,n-1)));
+  i=Math.max(0,Math.min(n-1,i));
+  rule.setAttribute("x1",X(i)); rule.setAttribute("x2",X(i)); rule.setAttribute("opacity",.35);
+  c.series.forEach((se,k)=>{{dots[k].setAttribute("cx",X(i));dots[k].setAttribute("cy",Y(se.values[i]));
+   dots[k].setAttribute("opacity",1);}});
+  tip.innerHTML=`<b>${{c.labels[i]}}</b>`+c.series.map(se=>
+   `<div><span class="sw" style="background:${{se.color}}"></span>${{se.name}} <i>${{se.values[i]}}${{c.unit||""}}</i></div>`).join("");
+  tip.style.opacity=1;
+  const tw=tip.offsetWidth||140;
+  tip.style.left=Math.max(2,Math.min(W-tw-2,X(i)-tw/2))+"px";
+  tip.style.top="2px";
+ }});
+ s.addEventListener("mouseleave",()=>{{tip.style.opacity=0;rule.setAttribute("opacity",0);
+  dots.forEach(d=>d.setAttribute("opacity",0));}});
+}}
+/* ── distributions: binned in the browser so the axes can switch lin/log ── */
+function fmtV(v,kind){{
+ if(kind==="sec"){{ if(v<90)return Math.round(v)+"с"; if(v<5400)return Math.round(v/60)+"м";
+  if(v<172800)return (v/3600).toFixed(v<36000?1:0)+"ч"; return (v/86400).toFixed(1)+"д";}}
+ if(v>=1000)return (v/1000).toFixed(v%1000&&v<10000?1:0)+"k";
+ return String(Math.round(v*10)/10);}}
+
+function bins(vals,xlog,target){{
+ const mn=Math.min(...vals), mx=Math.max(...vals);
+ if(xlog){{
+  const lo=Math.max(mn,0.5), steps=[], per=6;             // 6 bins per decade
+  const a=Math.floor(Math.log10(lo)*per), b=Math.ceil(Math.log10(mx)*per);
+  for(let k=a;k<=b;k++)steps.push(Math.pow(10,k/per));
+  const out=steps.slice(0,-1).map((s,i)=>({{lo:s,hi:steps[i+1],n:0}}));
+  vals.forEach(v=>{{const t=Math.max(v,lo);
+   let i=Math.floor(Math.log10(t)*per)-a; i=Math.max(0,Math.min(out.length-1,i)); out[i].n++;}});
+  return out;
+ }}
+ // linear: a regular step across the whole range, empty steps kept as zeros
+ const raw=(mx-mn)/target||1, p=Math.pow(10,Math.floor(Math.log10(raw)));
+ let step=[1,2,2.5,5,10].map(x=>x*p).find(x=>x>=raw)||10*p;
+ if(mx-mn<=40&&Number.isInteger(mn)&&Number.isInteger(mx))step=Math.max(1,Math.round(step));
+ const start=Math.floor(mn/step)*step, out=[];
+ for(let x=start;x<mx+step*0.5;x+=step)out.push({{lo:x,hi:x+step,n:0}});
+ vals.forEach(v=>{{let i=Math.floor((v-start)/step); i=Math.max(0,Math.min(out.length-1,i)); out[i].n++;}});
+ return out;
+}}
+
+function drawDist(box){{
+ const d=JSON.parse(box.dataset.d);
+ if(!box.dataset.init){{
+  box.dataset.init="1"; box.dataset.xlog=d.xlog?"1":"0"; box.dataset.ymode="n"; box.dataset.ylog="0";
+ }}
+ const W=box.clientWidth; if(!W)return;
+ const vals=d.v, n=vals.length, srt=[...vals].sort((a,b)=>a-b);
+ const med=srt[Math.floor(n/2)], avg=vals.reduce((a,b)=>a+b,0)/n;
+ const xlog=box.dataset.xlog==="1", pct=box.dataset.ymode==="p", ylog=box.dataset.ylog==="1";
+ const bs=bins(vals,xlog,Math.max(14,Math.min(46,Math.floor(W/28))));
+ const H=d.h, L=52, R=14, T=14, B=26, iw=W-L-R, ih=H-T-B;
+ const vmax=Math.max(...bs.map(b=>b.n))||1;
+ const ytop=pct?100*vmax/n:vmax;
+ const yv=b=>pct?100*b.n/n:b.n;
+ const Y=v=>{{ if(!ylog) return T+ih-ih*v/(nice(ytop)||1);
+   const lo=pct?100*0.5/n:0.5, t=Math.log10(Math.max(v,lo)/lo)/Math.log10(nice(ytop)/lo);
+   return v<=0?T+ih:T+ih-ih*Math.max(0,t);}};
+ const xpos=v=>{{ if(!xlog) return L+iw*(v-bs[0].lo)/(bs[bs.length-1].hi-bs[0].lo);
+   const a=Math.log10(Math.max(bs[0].lo,0.5)), b=Math.log10(bs[bs.length-1].hi);
+   return L+iw*(Math.log10(Math.max(v,Math.pow(10,a)))-a)/(b-a);}};
+
+ const ctl=`<div class="dctl">
+   <span class="seg"><span class="lab">X</span>
+     <button data-k="xlog" data-v="0" class="${{xlog?"":"on"}}">линейная</button>
+     <button data-k="xlog" data-v="1" class="${{xlog?"on":""}}">лог</button></span>
+   <span class="seg"><span class="lab">Y</span>
+     <button data-k="ymode" data-v="n" class="${{pct?"":"on"}}">количество</button>
+     <button data-k="ymode" data-v="p" class="${{pct?"on":""}}">проценты</button></span>
+   <span class="seg"><span class="lab">шкала Y</span>
+     <button data-k="ylog" data-v="0" class="${{ylog?"":"on"}}">линейная</button>
+     <button data-k="ylog" data-v="1" class="${{ylog?"on":""}}">лог</button></span></div>`;
+
+ let sv=`<svg width="${{W}}" height="${{H}}" viewBox="0 0 ${{W}} ${{H}}" style="display:block;overflow:visible">`;
+ const top=nice(ytop)||1;
+ for(let g=0;g<=4;g++){{
+  const v=ylog?top*Math.pow(10,-(4-g)/1.6):top*g/4, y=Y(v);
+  sv+=`<line x1="${{L}}" y1="${{y}}" x2="${{W-R}}" y2="${{y}}" stroke="${{g?"#eee":"#ddd"}}" stroke-width="1"/>`;
+  sv+=`<text x="${{L-8}}" y="${{y+3.5}}" font-size="10" fill="#9a9aa0" text-anchor="end">${{
+    pct?(v<1?v.toFixed(1):Math.round(v))+"%":fmtV(v,"num")}}</text>`;}}
+ bs.forEach(b=>{{
+  const x0=xpos(b.lo), x1=xpos(b.hi), w=Math.max(1.2,x1-x0-1.4), y=Y(yv(b));
+  if(b.n>0)sv+=`<rect x="${{x0+0.7}}" y="${{y}}" width="${{w}}" height="${{Math.max(1,T+ih-y)}}" `
+    +`rx="2.5" fill="url(#dg)"/>`;
+ }});
+ // median / mean / our own value — the three questions people actually ask of a histogram
+ const marks=[["медиана",med,"#ff375f"],["среднее",avg,"#ff9f0a"]];
+ if(d.mine!=null)marks.push(["мы",d.mine,"#30d158"]);
+ const placed=[];
+ marks.forEach(([lb,v,c])=>{{ const x=xpos(v); if(x<L-1||x>W-R+1)return;
+  let row=0; while(placed.some(q=>q.row===row&&Math.abs(q.x-x)<92))row++;   // stagger, don't overlap
+  placed.push({{x,row}});
+  const ty=T+11+row*13, anchor=x>W-110?"end":"start", dx=x>W-110?-4:4;
+  sv+=`<line x1="${{x}}" y1="${{T}}" x2="${{x}}" y2="${{T+ih}}" stroke="${{c}}" stroke-width="1.6" stroke-dasharray="4 3"/>`
+    +`<text x="${{x+dx}}" y="${{ty}}" font-size="10" font-weight="600" fill="${{c}}" text-anchor="${{anchor}}">${{lb}} ${{fmtV(v,d.fmt)}}</text>`;}});
+ const nt=Math.max(3,Math.min(9,Math.floor(W/110)));
+ for(let i=0;i<=nt;i++){{
+  const b0=bs[0].lo, b1=bs[bs.length-1].hi;
+  const v=xlog?Math.pow(10,Math.log10(Math.max(b0,0.5))+(Math.log10(b1)-Math.log10(Math.max(b0,0.5)))*i/nt)
+              :b0+(b1-b0)*i/nt;
+  sv+=`<text x="${{xpos(v)}}" y="${{H-6}}" font-size="10" fill="#9a9aa0" text-anchor="${{
+    i===0?"start":i===nt?"end":"middle"}}">${{fmtV(v,d.fmt)}}</text>`;}}
+ sv+=`<defs><linearGradient id="dg" x1="0" y1="0" x2="0" y2="1">
+   <stop offset="0" stop-color="#0071e3"/><stop offset="1" stop-color="#64d2ff"/></linearGradient></defs></svg>`;
+
+ const q=p=>srt[Math.min(n-1,Math.floor(n*p))];
+ const stat=`<div class="dstat">
+  <i><span class="sw" style="background:#ff375f"></span>медиана <b>${{fmtV(med,d.fmt)}}</b></i>
+  <i><span class="sw" style="background:#ff9f0a"></span>среднее <b>${{fmtV(avg,d.fmt)}}</b></i>
+  ${{d.mine!=null?`<i><span class="sw" style="background:#30d158"></span>у нас <b>${{fmtV(d.mine,d.fmt)}}</b></i>`:""}}
+  <i>p90 <b>${{fmtV(q(.9),d.fmt)}}</b></i><i>p99 <b>${{fmtV(q(.99),d.fmt)}}</b></i>
+  <i>макс <b>${{fmtV(srt[n-1],d.fmt)}}</b></i><i>n=<b>${{n}}</b></i></div>`;
+
+ box.innerHTML=ctl+sv+stat;
+ const tip=document.createElement("div"); tip.className="tip"; box.appendChild(tip);
+ const svgEl=box.querySelector("svg");
+ svgEl.addEventListener("mousemove",ev=>{{
+  const r=box.getBoundingClientRect(), x=ev.clientX-r.left;
+  let best=null,bd=1e9;
+  bs.forEach(b=>{{const c=(xpos(b.lo)+xpos(b.hi))/2; if(Math.abs(c-x)<bd){{bd=Math.abs(c-x);best=b;}}}});
+  if(!best)return;
+  let cum=0; for(const b of bs){{cum+=b.n; if(b===best)break;}}
+  tip.innerHTML=`<b>${{fmtV(best.lo,d.fmt)}} – ${{fmtV(best.hi,d.fmt)}}</b>`
+   +`<div>${{d.name}}: <i>${{best.n}}</i></div>`
+   +`<div>доля: <i>${{(100*best.n/n).toFixed(1)}}%</i></div>`
+   +`<div>накоплено: <i>${{(100*cum/n).toFixed(1)}}%</i></div>`;
+  tip.style.opacity=1;
+  const tw=tip.offsetWidth||150, cx=(xpos(best.lo)+xpos(best.hi))/2;
+  tip.style.left=Math.max(2,Math.min(W-tw-2,cx-tw/2))+"px"; tip.style.top="34px";
+ }});
+ svgEl.addEventListener("mouseleave",()=>tip.style.opacity=0);
+ box.querySelectorAll(".dctl button").forEach(b=>b.onclick=()=>{{
+  box.dataset[b.dataset.k]=b.dataset.v; drawDist(box);}});
+}}
+function drawAll(){{document.querySelectorAll(".chart").forEach(drawChart);
+ document.querySelectorAll(".dist").forEach(drawDist);}}
+drawAll();
+let rt; addEventListener("resize",()=>{{clearTimeout(rt);rt=setTimeout(drawAll,150);}});
+if(location.hash==="#stats")tab(1);   // last: tab() reaches into the chart consts above
 </script></html>"""
 
 

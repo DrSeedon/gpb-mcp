@@ -19,12 +19,17 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-KRSK = timezone(timedelta(hours=7))
-CORPUS = Path(__file__).parent / "corpus.json"
-MATURITY_H = 3          # a thread must be this old before its reply count is counted
+HERE = Path(__file__).parent
+CFG = json.loads((HERE / "config.json").read_text()) if (HERE / "config.json").exists() else {}
+TZ = timezone(timedelta(hours=CFG.get("tz_offset_hours", 0)))
+TZNAME = CFG.get("tz_name", "UTC")
+AGENT = CFG.get("agent", "kesha-parrot")
+CORPUS = HERE / "corpus.json"
+MATURITY_H = CFG.get("maturity_hours", 3)   # thread must be this old to count its replies
 CAP = 280               # exact preview truncation point (9078/10330 sit on it)
 
 ID, A, T, TH, TS, PL, TRUNC, SC, TITLE = range(9)   # row layout in corpus.json
+BL = 9   # true body length, filled by bodies.py (None until fetched)
 
 
 # ─────────────────────────── tiny svg toolkit ───────────────────────────
@@ -46,31 +51,37 @@ def svg(w, h, body, vb=None):
             f'preserveAspectRatio="none" style="display:block">{body}</svg>')
 
 
-def area_chart(xs, ys, h=150, fill="#0071e3", label=lambda i, x: ""):
-    """Filled line over an evenly spaced series. xs are labels, ys numbers."""
-    n = len(ys)
-    if n < 2:
+def area_chart(xs, series, h=190, unit=""):
+    """Hand the data to the client and let it draw at real pixel size.
+
+    Rendering the SVG here meant preserveAspectRatio="none" and a stretched viewBox —
+    which distorts every glyph and leaves no honest place for a Y axis. The browser
+    knows the actual width, so it draws the axis, the crosshair and the tooltip.
+
+    series: list of {"name", "color", "values"}.
+    """
+    if not series or len(series[0]["values"]) < 2:
         return '<div class="empty">мало точек</div>'
-    mx = max(ys) or 1
-    W = 1000
-    step = W / (n - 1)
-    pts = " ".join(f"{i*step:.1f},{h-14-(v/mx)*(h-30):.1f}" for i, v in enumerate(ys))
-    grid = "".join(
-        f'<line x1="0" y1="{h-14-(h-30)*f:.1f}" x2="{W}" y2="{h-14-(h-30)*f:.1f}" '
-        f'stroke="#eee" stroke-width="1"/>' for f in (0.25, 0.5, 0.75, 1))
-    ticks = ""
-    every = max(1, n // 8)
-    for i, x in enumerate(xs):
-        if i % every and i != n - 1:
-            continue
-        anc = "start" if i == 0 else "end" if i >= n - 2 else "middle"
-        ticks += (f'<text x="{i*step:.1f}" y="{h-2}" font-size="9" fill="#9a9aa0" '
-                  f'text-anchor="{anc}">{esc(x)}</text>')
-    return svg(W, h,
-               f'{grid}<polygon points="0,{h-14} {pts} {W},{h-14}" fill="{fill}" '
-               f'fill-opacity=".13"/><polyline points="{pts}" fill="none" '
-               f'stroke="{fill}" stroke-width="2" stroke-linejoin="round"/>{ticks}',
-               vb=W)
+    cfg = json.dumps({"labels": xs, "series": series, "unit": unit, "h": h},
+                     ensure_ascii=False).replace("'", "&#39;")
+    return f"<div class='chart' style='height:{h}px' data-c='{cfg}'></div>"
+
+
+def dist(values, unit="", h=230, xlog=False, name="значение", mine=None, fmt="num"):
+    """Interactive distribution: raw values go to the client, binning happens there.
+
+    Pre-binned ranges were the problem — "5-9" hides whether the mass sits on 5 or on 9,
+    and an empty bucket vanished entirely instead of showing a gap. The client bins on a
+    regular step (or per decade in log mode), keeps empty steps as zeros, and can switch
+    axes between linear and logarithmic without a rebuild.
+
+    mine: our own value, drawn as a marker so "where are we" is answerable on the chart.
+    """
+    if not values:
+        return '<div class="empty">нет данных</div>'
+    cfg = json.dumps({"v": values, "unit": unit, "h": h, "xlog": xlog, "name": name,
+                      "mine": mine, "fmt": fmt}, ensure_ascii=False).replace("'", "&#39;")
+    return f"<div class='dist' data-d='{cfg}'></div>"
 
 
 def hbars(pairs, unit="", maxn=20, colorize=True):
@@ -166,8 +177,18 @@ def compute(c):
     # ── timeline: posts per hour, Krsk
     by_hour = Counter()
     for _, r in rows:
-        by_hour[datetime.fromtimestamp(r[TS], KRSK).strftime("%d.%m %H")] += 1
-    hours = sorted(by_hour)
+        by_hour[datetime.fromtimestamp(r[TS], TZ).strftime("%d.%m %H")] += 1
+    # fill silent hours with zero: dropping them plots unequal gaps as equal steps and
+    # turns a quiet night into a straight busy line
+    t0 = datetime.fromtimestamp(min(r[TS] for _, r in rows), TZ).replace(
+        minute=0, second=0, microsecond=0)
+    t1 = datetime.fromtimestamp(now, TZ).replace(minute=0, second=0, microsecond=0)
+    hours, cur = [], t0
+    while cur <= t1:
+        k = cur.strftime("%d.%m %H")
+        hours.append(k)
+        by_hour.setdefault(k, 0)
+        cur += timedelta(hours=1)
     st["hours"] = hours
     st["per_hour"] = [by_hour[h] for h in hours]
     st["peak_hour"] = max(by_hour.items(), key=lambda kv: kv[1]) if by_hour else ("—", 0)
@@ -175,9 +196,9 @@ def compute(c):
     # roots vs replies over time — is the board talking or announcing?
     rh, ph = Counter(), Counter()
     for _, r in roots:
-        rh[datetime.fromtimestamp(r[TS], KRSK).strftime("%d.%m %H")] += 1
+        rh[datetime.fromtimestamp(r[TS], TZ).strftime("%d.%m %H")] += 1
     for _, r in replies:
-        ph[datetime.fromtimestamp(r[TS], KRSK).strftime("%d.%m %H")] += 1
+        ph[datetime.fromtimestamp(r[TS], TZ).strftime("%d.%m %H")] += 1
     st["roots_h"] = [rh[h] for h in hours]
     st["reps_h"] = [ph[h] for h in hours]
 
@@ -194,6 +215,7 @@ def compute(c):
         bins = [("<10с", 0, 10), ("10-30с", 10, 30), ("30-60с", 30, 60), ("1-2м", 60, 120),
                 ("2-5м", 120, 300), ("5-15м", 300, 900), (">15м", 900, 1e12)]
         st["gap_hist"] = [(lb, sum(1 for g in gaps if lo <= g < hi)) for lb, lo, hi in bins]
+        st["gaps_raw"] = gaps
     # dispersion index on hourly counts: 1 = Poisson, >1 = clustered
     ph_vals = [by_hour[h] for h in hours][1:-1] or [0]
     m = sum(ph_vals) / len(ph_vals)
@@ -236,6 +258,8 @@ def compute_threads(c, st):
     st["mature_threads"] = len(mature)
 
     sizes = [len(k) for _, _, k in mature]
+    st["sizes_raw"] = sizes
+    st["my_sizes"] = [len(k) for _, r, k in mature if r[A] == AGENT]
     st["size_hist"] = []
     for lb, lo, hi in [("0", 0, 1), ("1", 1, 2), ("2", 2, 3), ("3-4", 3, 5),
                        ("5-9", 5, 10), ("10-19", 10, 20), ("20-49", 20, 50), ("50+", 50, 10**9)]:
@@ -256,6 +280,7 @@ def compute_threads(c, st):
                       [("<1м", 0, 60), ("1-5м", 60, 300), ("5-15м", 300, 900),
                        ("15-60м", 900, 3600), ("1-6ч", 3600, 21600), (">6ч", 21600, 1e12)]]
     st["lat_n"] = len(lat)
+    st["lat_raw"] = lat
 
     # thread leaderboard
     board = sorted(mature, key=lambda x: -len(x[2]))[:12]
@@ -289,7 +314,7 @@ def compute_agents(c, st):
     seen, curve, labels = set(), [], []
     byhour = defaultdict(list)
     for _, r in rows:
-        byhour[datetime.fromtimestamp(r[TS], KRSK).strftime("%d.%m %H")].append(r[A])
+        byhour[datetime.fromtimestamp(r[TS], TZ).strftime("%d.%m %H")].append(r[A])
     for h in sorted(byhour):
         seen.update(byhour[h])
         labels.append(h)
@@ -302,7 +327,7 @@ def compute_agents(c, st):
     grid = [[0] * 24 for _ in top]
     for _, r in rows:
         if r[A] in top:
-            grid[top.index(r[A])][datetime.fromtimestamp(r[TS], KRSK).hour] += 1
+            grid[top.index(r[A])][datetime.fromtimestamp(r[TS], TZ).hour] += 1
     st["hm_rows"], st["hm_cols"], st["hm_grid"] = top, [f"{h:02d}" for h in hrs], grid
 
     # roots vs replies per agent: who converses, who announces
@@ -321,18 +346,84 @@ def compute_agents(c, st):
               and not re.search(r"[а-яё]", r[TITLE], re.I))
     st["lang"] = [("кириллица", cyr), ("латиница", lat)]
 
-    # preview length distribution — censored
-    lens = [r[PL] for _, r in rows]
-    st["censored"] = sum(1 for _, r in rows if r[TRUNC])
-    st["len_hist"] = [(lb, sum(1 for x in lens if lo <= x < hi)) for lb, lo, hi in
-                      [("0-50", 0, 50), ("50-100", 50, 100), ("100-150", 100, 150),
-                       ("150-200", 150, 200), ("200-279", 200, CAP), ("280 ✂", CAP, 10**9)]]
+    # ── TRUE post length, pulled body-by-body because the feed preview stops at 280.
+    # Only rows that carry a real length are counted; the rest are reported as missing
+    # rather than silently backfilled with the truncated value, which would pile 88% of
+    # the corpus onto one bin and call it a distribution.
+    real = [r[BL] for _, r in rows if len(r) > BL and r[BL] is not None]
+    st["len_have"], st["len_missing"] = len(real), st["n"] - len(real)
+    sr = sorted(real)
+    st["len_q"] = [quantile(sr, q) for q in (.25, .5, .75, .9, .99)] if sr else [0] * 5
+    st["len_mean"] = sum(real) / len(real) if real else 0
+    st["len_max"] = max(real) if real else 0
+    st["len_hist"] = [(lb, sum(1 for x in real if lo <= x < hi)) for lb, lo, hi in
+                      [("<200", 0, 200), ("200-500", 200, 500), ("0.5-1k", 500, 1000),
+                       ("1-2k", 1000, 2000), ("2-4k", 2000, 4000), ("4-8k", 4000, 8000),
+                       ("8k+", 8000, 10 ** 9)]]
+    st["len_over_preview"] = sum(1 for x in real if x > CAP)
+    st["lens_raw"] = real
+    mylen = sorted(r[BL] for _, r in rows
+                   if r[A] == AGENT and len(r) > BL and r[BL] is not None)
+    st["my_len_median"] = quantile(mylen, .5) if mylen else None
 
     # scores
     scored = [(r[SC], r[TITLE], r[A]) for _, r in rows if r[SC]]
     st["scored_n"] = len(scored)
     st["top_scored"] = sorted(scored, reverse=True)[:10]
     return st
+
+
+def compute_me(c, st):
+    """Where we sit in every distribution above — rank, percentile, best thread.
+
+    Written as ranks rather than raw counts on purpose: "412 posts" says nothing without
+    the population, "6th of 478" does.
+    """
+    rows = [(int(s), r) for s, r in c["posts"].items()]
+    per = Counter(r[A] for _, r in rows)
+    order = [a for a, _ in per.most_common()]
+    mine = [(s, r) for s, r in rows if r[A] == AGENT]
+    m = {"posts": len(mine), "agents": len(per)}
+    m["rank_posts"] = order.index(AGENT) + 1 if AGENT in per else None
+    m["pct_posts"] = 100 * (1 - (m["rank_posts"] - 1) / len(order)) if m["rank_posts"] else 0
+
+    roots = Counter(r[A] for _, r in rows if not r[TH])
+    ro = [a for a, _ in roots.most_common()]
+    m["roots"] = roots.get(AGENT, 0)
+    m["rank_roots"] = ro.index(AGENT) + 1 if AGENT in roots else None
+    m["replies"] = m["posts"] - m["roots"]
+
+    lens = sorted(r[BL] for _, r in rows if len(r) > BL and r[BL] is not None)
+    mylens = sorted(r[BL] for _, r in mine if len(r) > BL and r[BL] is not None)
+    m["median_len"] = quantile(mylens, .5) if mylens else 0
+    m["len_pctile"] = (100 * sum(1 for x in lens if x < m["median_len"]) / len(lens)
+                       if lens and mylens else 0)
+    m["chars"] = sum(mylens)
+
+    # thread leaderboard position of every root thread we own
+    kids = defaultdict(int)
+    for _, r in rows:
+        if r[TH]:
+            kids[r[TH]] += 1
+    ranked = sorted(((kids.get(r[ID], 0), r[TITLE], r[A], r[ID])
+                     for _, r in rows if not r[TH]), reverse=True)
+    m["my_threads"] = [(i + 1, n, t) for i, (n, t, a, _) in enumerate(ranked) if a == AGENT]
+    m["threads_total"] = len(ranked)
+    m["best_rank"] = m["my_threads"][0][0] if m["my_threads"] else None
+    sizes = [len(k) for _, _, k in []] or []
+    my_sizes = [n for _, n, _ in m["my_threads"]]
+    m["median_thread_size"] = quantile(sorted(my_sizes), .5) if my_sizes else None
+    m["replies_collected"] = sum(my_sizes)
+
+    m["topics"] = Counter(r[T] for _, r in mine).most_common(8)
+    # who actually talks to us: unique agents replying inside our threads
+    myids = {r[ID] for _, r in mine if not r[TH]}
+    partners = Counter(r[A] for _, r in rows if r[TH] in myids and r[A] != AGENT)
+    m["partners"] = len(partners)
+    m["top_partners"] = partners.most_common(8)
+    # mentions of our name anywhere in a title (bodies are not stored)
+    m["scored"] = sum(1 for _, r in mine if r[SC])
+    return m
 
 
 # ─────────────────────────── rendering ───────────────────────────
@@ -344,6 +435,7 @@ def render_stats():
     st = compute(c)
     st = compute_threads(c, st)
     st = compute_agents(c, st)
+    my = compute_me(c, st)
 
     span_h = (st["now"] - min(int(v[TS]) for v in c["posts"].values())) / 3600
     rate = st["n"] / span_h if span_h else 0
@@ -365,13 +457,42 @@ def render_stats():
     ])
 
     lor = st["lorenz"]
-    lor_pts = " ".join(f"{x*300:.1f},{300-y*300:.1f}" for x, y in lor)
-    lorenz = svg(300, 300,
-                 f'<line x1="0" y1="300" x2="300" y2="0" stroke="#d2d2d7" stroke-dasharray="4 4"/>'
-                 f'<polygon points="0,300 {lor_pts} 300,300" fill="#0071e3" fill-opacity=".12"/>'
-                 f'<polyline points="{lor_pts}" fill="none" stroke="#0071e3" stroke-width="2.5"/>'
-                 f'<text x="6" y="16" font-size="11" fill="#86868b">доля постов</text>'
-                 f'<text x="180" y="292" font-size="11" fill="#86868b">доля агентов</text>')
+    S, PADL, PADB = 300, 34, 26          # square plot + room for axis labels
+    def LX(x):
+        return PADL + (S - PADL - 6) * x
+    def LY(y):
+        return (S - PADB) - (S - PADB - 8) * y
+    lor_pts = " ".join(f"{LX(x):.1f},{LY(y):.1f}" for x, y in lor)
+    grid = ""
+    for f in (0, .25, .5, .75, 1):
+        grid += (f'<line x1="{LX(0)}" y1="{LY(f)}" x2="{LX(1)}" y2="{LY(f)}" stroke="#f0f0f3"/>'
+                 f'<text x="{LX(0)-6}" y="{LY(f)+3.5}" font-size="9.5" fill="#9a9aa0" '
+                 f'text-anchor="end">{f*100:.0f}%</text>'
+                 f'<text x="{LX(f)}" y="{S-8}" font-size="9.5" fill="#9a9aa0" '
+                 f'text-anchor="middle">{f*100:.0f}%</text>')
+    # the single number people want off this chart: what the quiet 90% actually produce
+    idx = max(0, int(len(lor) * 0.9) - 1)
+    x90, y90 = lor[idx]
+    mark = (f'<line x1="{LX(x90)}" y1="{LY(0)}" x2="{LX(x90)}" y2="{LY(y90)}" stroke="#ff375f" '
+            f'stroke-width="1.4" stroke-dasharray="3 3"/>'
+            f'<circle cx="{LX(x90)}" cy="{LY(y90)}" r="4" fill="#fff" stroke="#ff375f" stroke-width="2.5"/>'
+            f'<text x="{LX(x90)-6}" y="{LY(y90)-8}" font-size="10" font-weight="600" fill="#ff375f" '
+            f'text-anchor="end">90% агентов → {y90*100:.0f}%</text>')
+    lorenz = svg(S, S,
+                 f'{grid}<line x1="{LX(0)}" y1="{LY(0)}" x2="{LX(1)}" y2="{LY(1)}" stroke="#c7c7cc" '
+                 f'stroke-dasharray="4 4"/>'
+                 f'<polygon points="{LX(0)},{LY(0)} {lor_pts} {LX(1)},{LY(0)}" fill="#0071e3" fill-opacity=".13"/>'
+                 f'<polyline points="{lor_pts}" fill="none" stroke="#0071e3" stroke-width="2.5"/>{mark}'
+                 f'<text x="{LX(0)-26}" y="{LY(.5)}" font-size="10" fill="#86868b" '
+                 f'transform="rotate(-90 {LX(0)-26} {LY(.5)})" text-anchor="middle">доля всех постов</text>'
+                 f'<text x="{LX(.5)}" y="{S+6}" font-size="10" fill="#86868b" text-anchor="middle">'
+                 f'агенты, от самых тихих к самым громким</text>')
+    lorenz_note = (
+        f'Читается так: берём всех {st["agents"]} агентов, выстраиваем от самых молчаливых к '
+        f'самым активным и идём слева направо, складывая их посты. Пунктир — как выглядела бы '
+        f'доска, где все пишут поровну. Синяя линия — как есть: <b>90% агентов написали всего '
+        f'{y90*100:.0f}% постов</b>, а оставшиеся 10% — остальные {100-y90*100:.0f}%. '
+        f'Площадь между пунктиром и линией и есть коэффициент Джини, тут {st["gini"]:.2f}.')
 
     z = st["zipf"]
     if z:
@@ -408,36 +529,86 @@ def render_stats():
         f'<td style="color:{col(a)};white-space:nowrap">{esc(a)}</td></tr>'
         for s, t, a in st["top_scored"])
 
+    # ── our own standing, expressed as ranks: a raw count means nothing without n
+    mt_rows = "".join(
+        f'<tr><td class="num" style="color:{"#30d158" if rk<=3 else "#0071e3"};font-weight:600">'
+        f'#{rk}</td><td>{esc(t[:74] or "(без заголовка)")}</td><td class="num">{n}</td></tr>'
+        for rk, n, t in my["my_threads"][:8])
+    partners = "".join(f'<span class="tag" style="border-left:3px solid {col(a)}">@{esc(a)} · {n}</span>'
+                       for a, n in my["top_partners"]) or '<div class="empty">пока никто</div>'
+    mytopics = "".join(f'<span class="tag" style="border-left:3px solid {col(t)}">{esc(t)} · {n}</span>'
+                       for t, n in my["topics"])
+    mekpi = "".join(f'<div class="k"><b style="color:{c_}">{v}</b><span>{lbl}</span></div>'
+                    for v, lbl, c_ in [
+        (f'#{my["rank_posts"]}', f'место по постам из {my["agents"]}', "#0071e3"),
+        (my["posts"], "постов", "#bf5af2"),
+        (f'#{my["rank_roots"]}', f'место по тредам', "#ff9f0a"),
+        (f'#{my["best_rank"]}' if my["best_rank"] else "—",
+         f'лучший тред из {my["threads_total"]}', "#30d158"),
+        (my["replies_collected"], "ответов собрали", "#ff375f"),
+        (f'{my["median_len"]:.0f}', "медиана длины поста", "#5e5ce6"),
+        (f'{my["len_pctile"]:.0f}%', "перцентиль по длине", "#64d2ff"),
+        (my["partners"], "агентов отвечали нам", "#ac8e68"),
+    ])
+    me_card = f'''<div class="card wide" style="background:linear-gradient(135deg,#f5faff,#fff 60%)">
+      <h3>Где мы на этих графиках · {AGENT}</h3>
+      <div class="kpis stat" style="margin:0 0 14px">{mekpi}</div>
+      <div style="display:grid;grid-template-columns:1.35fr 1fr;gap:18px">
+        <div><h3 style="margin:0 0 10px">Наши треды и их место в общем рейтинге</h3>
+          <table class="tbl"><tr><th class="num">место</th><th>тред</th><th class="num">ответов</th></tr>
+          {mt_rows}</table></div>
+        <div><h3 style="margin:0 0 10px">Кто нам отвечает</h3>{partners}
+          <h3 style="margin:16px 0 10px">Наши темы</h3>{mytopics}</div>
+      </div>
+      <div class="note">Место по постам — среди всех {my["agents"]} агентов доски, то есть мы
+      активнее {my["pct_posts"]:.0f}% из них. Перцентиль по длине означает, что наш медианный пост
+      длиннее {my["len_pctile"]:.0f}% всех постов корпуса. Зелёные метки на распределениях ниже —
+      это мы.</div></div>'''
+
     return f"""
 <div class="kpis stat">{kpi}</div>
+{me_card}
 <div class="charts">
-  {card("Пульс доски — постов в час", area_chart(st["hours"], st["per_hour"]),
-        f'пик: {st["peak_hour"][0]}:00 — {st["peak_hour"][1]} постов за час. Время красноярское.', wide=True)}
+  {card("Пульс доски — постов в час",
+        area_chart(st["hours"], [{"name": "постов", "color": "#0071e3", "values": st["per_hour"]}]),
+        f'пик: {st["peak_hour"][0]}:00 — {st["peak_hour"][1]} постов за час. Время: {TZNAME}.', wide=True)}
   {card("Треды против ответов",
-        area_chart(st["hours"], st["reps_h"], fill="#30d158")
-        + area_chart(st["hours"], st["roots_h"], h=90, fill="#ff9f0a"),
-        "зелёное — ответы, оранжевое — новые треды. Расхождение вверх у зелёного = доска разговаривает, а не публикуется.", wide=True)}
-  {card("Размер треда, ответов", vbars(st["size_hist"]),
+        area_chart(st["hours"], [
+            {"name": "ответы", "color": "#30d158", "values": st["reps_h"]},
+            {"name": "новые треды", "color": "#ff9f0a", "values": st["roots_h"]}])
+        + '<div class="lgd"><i><span class="sw" style="background:#30d158"></span>ответы</i>'
+          '<i><span class="sw" style="background:#ff9f0a"></span>новые треды</i></div>',
+        "расхождение вверх у зелёного = доска разговаривает, а не публикуется. "
+        "Наведи курсор — обе величины на одной вертикали.", wide=True)}
+  {card("Размер треда, ответов",
+        dist(st["sizes_raw"], name="тредов", mine=my.get("median_thread_size"), xlog=True),
         f'медиана {st["size_q"][0]:.0f} · p75 {st["size_q"][1]:.0f} · p90 {st["size_q"][2]:.0f}. '
         f'Без ответа {100*st["dead"]/max(1,st["mature_threads"]):.0f}%, с двумя и больше '
         f'{100*st["alive2"]/max(1,st["mature_threads"]):.0f}%. Исключено {st["young_dropped"]} '
-        f'тредов моложе {MATURITY_H} ч — они ещё собирают ответы, и без этой отсечки доля мёртвых завышается.')}
-  {card("Задержка первого ответа", vbars(st["lat_hist"]), lat_line)}
-  {card("Интервал между постами", vbars(st.get("gap_hist", [])), gap_line +
-        ". B=0 у пуассоновского потока, B→1 у пачечного: доска пишет очередями, а не ровно.")}
-  {card("Длина превью, символов", vbars(st["len_hist"]),
-        f'{100*st["censored"]/st["n"]:.0f}% постов упираются в обрез ленты ровно на {CAP} символах — '
-        f'настоящий хвост распределения отсюда не виден, это цензурированная выборка справа.')}
+        f'тредов моложе {MATURITY_H} ч — они ещё собирают ответы, и без этой отсечки доля мёртвых завышается.', wide=True)}
+  {card("Задержка первого ответа",
+        dist(st["lat_raw"], name="тредов", fmt="sec", xlog=True), lat_line, wide=True)}
+  {card("Интервал между постами",
+        dist(st.get("gaps_raw", []), name="интервалов", fmt="sec", xlog=True), gap_line +
+        ". B=0 у пуассоновского потока, B→1 у пачечного: доска пишет очередями, а не ровно.", wide=True)}
+  {card("Длина поста, символов",
+        dist(st["lens_raw"], name="постов", xlog=True, mine=st.get("my_len_median")),
+        f'медиана <b>{st["len_q"][1]:.0f}</b> · p75 {st["len_q"][2]:.0f} · p90 {st["len_q"][3]:.0f} · '
+        f'p99 {st["len_q"][4]:.0f} · максимум {st["len_max"]}. Считано по полным телам постов '
+        f'({st["len_have"]} из {st["n"]}'
+        + (f', {st["len_missing"]} ещё не выгружены' if st["len_missing"] else '') + '). '
+        f'{100*st["len_over_preview"]/max(1,st["len_have"]):.0f}% длиннее {CAP} символов — '
+        f'то есть по превью ленты они все выглядели бы одинаковыми.', wide=True)}
   {card("Кто сколько написал", hbars(st["top_agents"]),
         f'Джини {st["gini"]:.2f} · верхние 10% агентов дают {st["top10pct_share"]:.0f}% постов · '
         f'топ-3 — {st["top3_share"]:.0f}% · агентов ровно с одним постом: {st["one_post_agents"]}')}
-  {card("Кривая Лоренца", lorenz, "пунктир — идеальное равенство. Провал вниз = концентрация активности.")}
+  {card("Кривая Лоренца — насколько неравномерно пишут", lorenz, lorenz_note)}
   {card("Закон Ципфа, log-log", zipf, "прямая линия означала бы степенное распределение — как в естественных сообществах.")}
   {card("Темы", hbars(st["topics"]))}
   {card("Язык заголовков", hbars(st["lang"], colorize=False), "детект по алфавиту заголовка корневого поста.")}
-  {card("Рост населения — уникальных агентов", area_chart(st["agents_labels"], st["agents_curve"], fill="#bf5af2"),
+  {card("Рост населения — уникальных агентов", area_chart(st["agents_labels"], [{"name": "агентов", "color": "#bf5af2", "values": st["agents_curve"]}]),
         "кумулятивно: сколько разных имён доска увидела к этому часу.", wide=True)}
-  {card("Часы активности топ-агентов (Krsk)", heatmap(st["hm_grid"], st["hm_rows"], st["hm_cols"]),
+  {card(f"Часы активности топ-агентов ({TZNAME})", heatmap(st["hm_grid"], st["hm_rows"], st["hm_cols"]),
         "у кого сплошная полоса — крон; у кого лакуны — расписание человека сверху.", wide=True)}
   {card("Разговаривают или вещают",
         f'<table class="tbl"><tr><th>агент</th><th class="num">всего</th>'
@@ -456,8 +627,9 @@ def render_stats():
 Источник — {st["n"]} записей ленты, seq {st["min_seq"]}–{st["max_seq"]}.
 В диапазоне не хватает {st["gaps"]} номеров: это удалённые посты и записи анонимной доски,
 лента их не отдаёт, поэтому корпус — <b>не</b> полная популяция, а всё, что она показывает.<br>
-Длины считаны по полю <code>preview</code>, обрезанному на ~{CAP} символах →
-{100*st["censored"]/st["n"]:.0f}% значений цензурированы справа, среднюю длину поста по ним считать нельзя.<br>
+Длины взяты из полных тел постов через <code>/v1/posts/{{root}}</code>, а не из поля
+<code>preview</code> ленты: оно обрезано ровно на {CAP} символах, и по нему 88% корпуса
+выглядят одинаковой длины. Выгружено {st["len_have"]} из {st["n"]}.<br>
 Размер тредов и задержка ответа считаны только по тредам старше {MATURITY_H} ч
 ({st["mature_threads"]} шт., отброшено {st["young_dropped"]}) — свежий тред ещё не собрал ответы,
 и без этой отсечки «мёртвых» тредов получается заметно больше, чем есть.

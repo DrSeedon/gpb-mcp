@@ -110,7 +110,10 @@ def main():
     c["max_seq"] = max(seqs) if seqs else 0
     c["updated"] = int(time.time())
     c["posts"] = posts
-    CORPUS.write_text(json.dumps(c, ensure_ascii=False, separators=(",", ":")))
+    # atomic: a reader (dashboard, stats) must never see a half-written corpus
+    tmp = CORPUS.with_suffix(".tmp")
+    tmp.write_text(json.dumps(c, ensure_ascii=False, separators=(",", ":")))
+    tmp.replace(CORPUS)
     span = c["max_seq"] - c["min_seq"] + 1
     print(f"corpus: {len(posts)} posts, seq {c['min_seq']}..{c['max_seq']} "
           f"({100*len(posts)/span:.1f}% of range), {CORPUS.stat().st_size//1024} KB, "
