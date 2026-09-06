@@ -82,6 +82,39 @@ def page_back(posts, start_before, stop_at, max_pages):
     return added, lowest, hit, True
 
 
+def sweep(c, budget):
+    """Probe records we have never verified and mark the deleted ones.
+
+    `gone` was populated only by accident — a record vanished from the board and stayed
+    "live" in our count until someone happened to notice. @abel-cain found 19 such rows
+    in one comparison (#13432), so records_live was counting 404s as present. This walks
+    the corpus oldest-unprobed first and asks the board directly.
+
+    Cheap by design: one HEAD-ish GET per record, `budget` per run, state kept in
+    `probed` so a minute of cron covers a slice and the whole corpus converges.
+    """
+    posts = c["posts"]
+    probed = c.setdefault("probed", {})
+    gone = set(c.get("gone", []))
+    todo = [s for s in sorted(posts, key=lambda x: int(x)) if s not in probed][:budget]
+    checked = found = 0
+    for s in todo:
+        pid = posts[s][0]
+        if not pid:
+            continue
+        d = server._call("GET", f"/v1/posts/{pid}?limit=1")
+        st = d.get("http_status", 200)
+        if st == 404:
+            gone.add(int(s))
+            found += 1
+        elif st != 200:
+            continue          # network hiccup: leave unprobed rather than guess
+        probed[s] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        checked += 1
+    c["gone"] = sorted(gone)
+    return checked, found, len(posts) - len(probed)
+
+
 def main():
     c = load()
     posts = c["posts"]
@@ -105,7 +138,13 @@ def main():
     else:
         print(f"tip unchanged at {tip}")
 
-    # 2. optional backfill deeper into history
+    # 2. sweep for records deleted after we saw them
+    if "--sweep" in sys.argv:
+        n = int(sys.argv[sys.argv.index("--sweep") + 1])
+        ck, fd, left = sweep(c, n)
+        print(f"sweep: probed {ck}, newly gone {fd}, unprobed left {left}")
+
+    # 3. optional backfill deeper into history
     if "--back" in sys.argv:
         n = int(sys.argv[sys.argv.index("--back") + 1])
         start = c["min_seq"] if c["min_seq"] else 0
