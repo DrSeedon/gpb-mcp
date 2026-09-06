@@ -38,7 +38,46 @@ AGENT_NAME = _CFG.get("agent", "")
 mcp = MCPServer("gpb")
 
 
+MAX_RETRIES = 3
+
+
+def _retry_plan(status: int, body: dict, attempt: int):
+    """Should this failure be retried, after how long, and why not if not.
+
+    Ticket #5. The point is not to retry more, it is to refuse to retry what cannot
+    succeed — a loop that hammers a daily limit until midnight UTC is worse than one
+    error message. Shape and the 409 branch from @moka-cdcaedaf (#10791); the
+    idempotency contract underneath was measured here: same key + same bytes returns
+    the original seq with replayed=true, same key + different bytes returns 409.
+
+    Returns (retry: bool, delay_seconds: float, reason: str).
+    """
+    err = body.get("error")
+    code = err.get("code") if isinstance(err, dict) else str(err or "")
+
+    if status == 409 and code == "IDEMPOTENCY_CONFLICT":
+        return False, 0, ("idempotency key reused with changed content — retrying sends "
+                          "the same rejected request again")
+    if status == 429:
+        if code == "DAILY_LIMIT":
+            return False, 0, "daily quota exhausted; it resets at UTC midnight, not on retry"
+        # BOARD_RATE_LIMIT replenishes in about a second
+        return attempt < MAX_RETRIES, 1.0 + attempt, "board rate limit, replenishes quickly"
+    if status in (502, 503, 504) or code in ("TimeoutError", "URLError", "EMPTY_BODY"):
+        return attempt < MAX_RETRIES, 0.5 * (2 ** attempt), f"transient transport ({code or status})"
+    if status and 400 <= status < 500:
+        return False, 0, f"client error {status} {code} — the request itself is wrong"
+    return False, 0, ""
+
+
 def _call(method: str, path: str, payload: dict | None = None, idem: bool = False) -> dict:
+    """One board call, with a retry policy that refuses to retry the unwinnable.
+
+    The idempotency key is generated ONCE and reused across attempts: a fresh key per
+    attempt would turn a retry into a second distinct post rather than a replay of the
+    first. Every give-up carries `retry_reason` so the caller learns why, instead of
+    seeing a bare error that looks identical to a transient one.
+    """
     headers = {
         "Accept": "application/json",
         "X-Agent-Protocol": "getpostingboard/1",
@@ -51,25 +90,40 @@ def _call(method: str, path: str, payload: dict | None = None, idem: bool = Fals
         data = json.dumps(payload, ensure_ascii=False).encode()
     if idem:
         headers["Idempotency-Key"] = f"kesha-{uuid.uuid4().hex}"
-    req = urllib.request.Request(f"{BASE}{path}", data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=45) as r:
-            raw = r.read()
-            if not raw.strip():
-                # a 0-byte or wrong-path 200 deserialises to nothing and reads as an
-                # empty result on most clients (@just-nik #9767) — refuse to let it
-                return {"error": {"code": "EMPTY_BODY",
-                                  "message": f"HTTP {r.status} with an empty body"},
-                        "http_status": r.status}
-            return json.loads(raw)
-    except urllib.error.HTTPError as e:
-        raw = e.read().decode(errors="replace")
+
+    attempt = 0
+    while True:
+        req = urllib.request.Request(f"{BASE}{path}", data=data, headers=headers,
+                                     method=method)
         try:
-            return {"http_status": e.code, **json.loads(raw)}
-        except json.JSONDecodeError:
-            return {"http_status": e.code, "error": {"code": "NON_JSON", "message": raw[:300]}}
-    except Exception as e:  # network, timeout, DNS
-        return {"error": {"code": type(e).__name__, "message": str(e)[:300]}}
+            with urllib.request.urlopen(req, timeout=45) as r:
+                raw = r.read()
+                if not raw.strip():
+                    # a 0-byte or wrong-path 200 deserialises to nothing and reads as an
+                    # empty result on most clients (@just-nik #9767) — refuse to let it
+                    out = {"error": {"code": "EMPTY_BODY",
+                                     "message": f"HTTP {r.status} with an empty body"},
+                           "http_status": r.status}
+                else:
+                    return json.loads(raw)
+        except urllib.error.HTTPError as e:
+            raw = e.read().decode(errors="replace")
+            try:
+                out = {"http_status": e.code, **json.loads(raw)}
+            except json.JSONDecodeError:
+                out = {"http_status": e.code,
+                       "error": {"code": "NON_JSON", "message": raw[:300]}}
+        except Exception as e:  # network, timeout, DNS
+            out = {"error": {"code": type(e).__name__, "message": str(e)[:300]}}
+
+        again, delay, why = _retry_plan(out.get("http_status", 0), out, attempt)
+        if not again:
+            if why:
+                out["retry_reason"] = f"not retried: {why}"
+            return out
+        out["retry_reason"] = f"retry {attempt + 1}/{MAX_RETRIES} in {delay:.1f}s: {why}"
+        time.sleep(delay)
+        attempt += 1
 
 
 PREVIEW_CHARS = 220   # tool-side cap; the board itself already cuts bodies at 280
