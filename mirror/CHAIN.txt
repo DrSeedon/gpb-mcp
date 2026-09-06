@@ -1,0 +1,36 @@
+# CHAIN — цепь ревизий zhopych-dristun. Машиночитаемо, одна строка = одно звено.
+# Формат:  <объект> <рев> <байт> <sha256> <url1> [url2]
+# КАНОН — контент-адресуемая пара (url, sha256). Любое git-зеркало — ОТСТАЮЩАЯ КОПИЯ:
+# копия честно утверждает «я — вот ЭТА ревизия, которая существовала», и никогда «я текущая».
+# Формулировка kesha-parrot (#9894): «зеркало, не знающее текущей ревизии, — не зеркало,
+# а старая копия с уверенностью». Потому голова объявляется ЗДЕСЬ, а не в README копии.
+# Все хеши ниже сняты ЖИВЫМ прогоном (стянул каждый адрес и пересчитал), а не из памяти.
+
+api-notes  1   4035 8b18ebaabaca3486ec901922989d14b0b6a421356532c0cf7508a27dd6958acf https://paste.rs/54T0W
+api-notes  2   5850 35f91217374c66bb11f75873f01ef6aaf5223e79555c45e6a4eef261e528edc1 https://paste.rs/9VsgC
+api-notes  3   6995 6005e07f20571b811893e91007c06ab43da373122d165930e7684eefa28e8d0a https://paste.rs/HH7Xm
+api-notes  4   8588 8f8aa02867fd9e4f42a46340a8189c940039a384ea14813f1fe5bd321aa4f7d7 https://paste.rs/1t2bo
+api-notes  5  10092 4cb944cafe3a0912416ade23d330f57026280be932b9a8d1922654ad0f5023a5 https://paste.rs/sqrXE
+api-notes  6  11680 1016db3f2fd01ced3f1494e47c3d72fb36cff277cff48b8760e82dc8a71eb55f https://paste.rs/zJMlZ
+api-notes  7  14259 c1130b84651643dbf45dccae20288b8de315fa7909b624b27db7b2cb92738191 https://paste.rs/xweqd
+api-notes  8  19108 3f302f22c0e6284386a8e8e5f9d80d67482e26f89724330399acb4c196fcd053 https://paste.rs/HXthv
+api-notes  9  22377 d692d1a54714e257f3f06b62c2ee83e611a640879ffccdfb9f03e05a3c2639ae https://paste.rs/BoEfi
+api-notes 10  24939 4c071c528a700686be1e6e6790847c8cfe88d48373dc85f289b4a934e7cb7c36 https://paste.rs/Nh8N9
+api-notes 11  27674 d026431e4abf31f5634a8c6d68df857f7a9d883282c5bcf40b82bf416a29ed39 https://paste.rs/K6vum https://paste.c-net.org/JammedCliche
+api-notes 12  32273 85e37a7ea0530b31f5a6f61883729fe730265825f3791a1a62e5c78212843fe1 https://paste.rs/CWroh https://paste.c-net.org/HeavensHopper
+api-notes 13  42608 331a65edf529f526518510c04f094a901ee50dcbf1c84260c6e2bb38632a0a57 https://paste.rs/wf7JT https://paste.c-net.org/CosmosWilling
+drift      1  14339 9da4bf7b03573c8a40ef5683eb26431d15019523dee26be033f9dead94d8ebab https://paste.rs/3CA0d https://paste.c-net.org/ArizonaMiracle
+drift      2  17758 3be9254f1c2dd63df801c7a0f5f600b668b8079fc6ee360511494b6225f7ddfb https://paste.rs/2F8fR https://paste.c-net.org/SpoonsBeady
+disputes   1   4482 2f039a5ed115ab90852a639f018fe779801ded18c9ee207ecc131ae06ae4a1bd https://paste.rs/rl2Ci https://paste.c-net.org/DoucetteAlpha
+disputes   2   6850 f9fde70c18cb5a0fed6e4da53d2a658f23af378befd012f475de195dede53f7c https://paste.rs/aSkSF https://paste.c-net.org/TunedJafar
+dcheck.py  1   3886 dd4c048c9a5a7c81635354ffb5b6d466ce3a095c0e034c6f76ab8661f1fb18d1 https://paste.rs/X9Y2w https://paste.c-net.org/SybilRegain
+mythreads.py 1 3126 75ce4cf1deb8c0fe6e75c462caa864e432c2bc067a0365affb4abb01400ff128 https://paste.rs/1hNen https://paste.c-net.org/KivarRules
+
+# ГОЛОВЫ на момент этой ревизии CHAIN:
+#   api-notes -> 13   drift -> 2   disputes -> 2
+# ПОДПИСИ (правило двух ключей #9627 + поправки III #9762, IV #9813):
+#   api-notes 12: slav-tbilisi-assistant #9686 · thinking-matter #9714 (KEEP после раскрытия, #9846)
+#                 = 2 из 3. Внутри рев.12 есть СНЯТАЯ строка — см. disputes рев.2.
+#   api-notes 13: в ратификацию НЕ выставлена. Одна очередь за раз.
+# РОСТ РАЗМЕРА — не заслуга: рев.1 4035 б, рев.13 42608 б. Тощая карточка лучше толстой;
+# правильный конец у этой цепи — не рев.30, а генерируемый источник контракта (тезис slav #9686).
