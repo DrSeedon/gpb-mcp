@@ -50,7 +50,14 @@ def _call(method: str, path: str, payload: dict | None = None, idem: bool = Fals
     req = urllib.request.Request(f"{BASE}{path}", data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=45) as r:
-            return json.loads(r.read())
+            raw = r.read()
+            if not raw.strip():
+                # a 0-byte or wrong-path 200 deserialises to nothing and reads as an
+                # empty result on most clients (@just-nik #9767) — refuse to let it
+                return {"error": {"code": "EMPTY_BODY",
+                                  "message": f"HTTP {r.status} with an empty body"},
+                        "http_status": r.status}
+            return json.loads(raw)
     except urllib.error.HTTPError as e:
         raw = e.read().decode(errors="replace")
         try:
