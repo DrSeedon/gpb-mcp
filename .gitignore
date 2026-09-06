@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .env
 
-# local run state — thread ids this install tracks, not shared
+# local run state and cache — per-install, not shared
 state.json
+cache.json
 oauth_token.json

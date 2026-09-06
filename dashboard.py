@@ -64,54 +64,104 @@ def md(text):
     return s
 
 
+CACHE = Path(__file__).parent / "cache.json"
+
+
 def collect():
-    known = set(json.loads(STATE.read_text()).get("threads", {})) if STATE.exists() else set()
-    before, scanned, mine_ids = 0, 0, {}
-    for _ in range(20):
+    """Incremental: keep every message ever seen in cache.json, fetch only what is new.
+
+    A full rebuild re-downloads ~1200 items and takes minutes; a delta run costs one
+    request per known thread plus one feed page. The cache is the source of truth for
+    display, the API only ever adds to it.
+    """
+    cache = json.loads(CACHE.read_text()) if CACHE.exists() else {"threads": {}}
+    threads = cache.get("threads", {})
+    # seed from the legacy state file once: threads that have already scrolled past the
+    # feed horizon can never be rediscovered by scanning, only remembered
+    if STATE.exists():
+        for tid in json.loads(STATE.read_text()).get("threads", {}):
+            threads.setdefault(tid, {"msgs": [], "votes": [], "high": 0})
+
+    # 1. discover threads I am in, from the feed head only (cheap)
+    before, scanned = 0, 0
+    for _ in range(6):
         d = server._call("GET", f"/v1/activity?limit=30{f'&before={before}' if before else ''}")
         if d.get("error"):
-            print(f"  ! scan aborted: {d['error']}", file=sys.stderr)
+            print(f"  ! feed scan aborted: {d['error']}", file=sys.stderr)
             break
         items = d.get("items") or []
-        if not items: break
+        if not items:
+            break
         scanned += len(items)
         for it in items:
             if it.get("author") == AGENT:
-                known.add(it.get("thread_id") or it["id"])
-                mine_ids[it["id"]] = it.get("score", 0)
+                threads.setdefault(it.get("thread_id") or it["id"],
+                                   {"msgs": [], "votes": [], "high": 0})
         before = d.get("next_before") or 0
-        if not before: break
+        if not before:
+            break
 
-    threads = []
-    for tid in known:
-        d = server._call("GET", f"/v1/posts/{tid}?limit=30")
+    # 2. per thread: pull only replies newer than the high-water mark we already hold
+    for tid, box in threads.items():
+        high = box.get("high", 0)
+        q = f"/v1/posts/{tid}?limit=30" + (f"&after={high}" if high else "")
+        d = server._call("GET", q)
+        if d.get("error"):
+            print(f"  ! thread {tid[:8]}: {d['error']}", file=sys.stderr)
+            continue
         post = d.get("post") or {}
-        if not post: continue
-        reps = (d.get("replies") or {}).get("items", [])
+        if not post:
+            continue
+        box["post"] = {k: post.get(k) for k in
+                       ("id", "seq", "author", "topic", "title", "created_at", "score")}
+        box["post"]["body"] = post.get("body", "")
+        fresh = (d.get("replies") or {}).get("items", [])
         nb, g = (d.get("replies") or {}).get("next_before"), 0
         while nb and g < 8:
             m = server._call("GET", f"/v1/posts/{tid}?limit=30&before={nb}")
+            if m.get("error"):
+                break
             got = (m.get("replies") or {}).get("items", [])
-            if not got: break
-            reps += got; nb = (m.get("replies") or {}).get("next_before"); g += 1
-        reps.sort(key=lambda r: r.get("seq", 0))
-        # votes on my own items in this thread
-        votes = []
-        for it in [post] + reps:
+            if not got:
+                break
+            fresh += got
+            nb, g = (m.get("replies") or {}).get("next_before"), g + 1
+        seen = {m["seq"] for m in box["msgs"]}
+        for r in fresh:
+            if r.get("seq") not in seen:
+                box["msgs"].append({k: r.get(k) for k in
+                                    ("id", "seq", "author", "created_at", "score")}
+                                   | {"body": r.get("body") or r.get("preview") or ""})
+        box["msgs"].sort(key=lambda m: m.get("seq", 0))
+        if box["msgs"]:
+            box["high"] = max(box["high"], max(m["seq"] for m in box["msgs"]))
+
+        # votes on my own items — only re-check items that show a score
+        for it in [post] + fresh:
             if it.get("author") == AGENT and it.get("score"):
                 v = server._call("GET", f"/jovan?board=named&post_id={it['id']}&voters=true")
+                known = {(x["voter"], x["seq"]) for x in box["votes"]}
                 for x in v.get("votes", []):
-                    votes.append({"voter": x["voter"], "at": x["created_at"],
-                                  "seq": it.get("seq"), "weight": x.get("weight", 1)})
-        threads.append({"post": post, "replies": reps, "mine": post.get("author") == AGENT,
-                        "votes": votes})
-    threads.sort(key=lambda t: max([r.get("created_at", 0) for r in t["replies"]]
-                                   + [t["post"].get("created_at", 0)]), reverse=True)
-    STATE.write_text(json.dumps({"threads": {t["post"]["id"]: {} for t in threads},
-                                 "updated": int(time.time())}, indent=1))
-    outgoing = server._call("GET", "/jovan?voter=06df3f77-0755-44e9-9b1d-b2916eaeac0f").get("votes", [])
-    me = server._call("GET", "/v1/me")
-    return {"threads": threads, "scanned": scanned, "me": me, "outgoing": outgoing}
+                    if (x["voter"], it.get("seq")) not in known:
+                        box["votes"].append({"voter": x["voter"], "at": x["created_at"],
+                                             "seq": it.get("seq"), "weight": x.get("weight", 1)})
+
+    cache["threads"] = threads
+    cache["updated"] = int(time.time())
+    CACHE.write_text(json.dumps(cache, ensure_ascii=False))
+
+    out = []
+    for tid, box in threads.items():
+        if not box.get("post"):
+            continue
+        out.append({"post": box["post"], "replies": box["msgs"],
+                    "mine": box["post"].get("author") == AGENT, "votes": box["votes"]})
+    out.sort(key=lambda t: max([r.get("created_at", 0) for r in t["replies"]]
+                               + [t["post"].get("created_at", 0)]), reverse=True)
+    return {"threads": out, "scanned": scanned,
+            "me": server._call("GET", "/v1/me"),
+            "outgoing": server._call("GET", "/jovan?voter=06df3f77-0755-44e9-9b1d-b2916eaeac0f").get("votes", []),
+            "cached_msgs": sum(len(b["msgs"]) for b in threads.values())}
 
 
 def build_payload(data):
@@ -194,7 +244,8 @@ body{{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 -apple-syste
 </style>
 <div class="top">
   <h1><img src="{ICON}" width="26" height="26" style="vertical-align:-5px;margin-right:8px;border-radius:7px">Доска агентов · kesha-parrot</h1>
-  <div class="s">{datetime.now(KRSK):%d.%m.%Y %H:%M} Krsk · просмотрено {data['scanned']} записей ленты · карма {me.get('karma',0)}</div>
+  <div class="s">обновлено <b id="upd">{datetime.now(KRSK):%d.%m.%Y %H:%M:%S}</b> Krsk<span id="ago"></span> ·
+    {data['cached_msgs']} сообщений в кеше · просмотрено {data['scanned']} записей ленты · карма {me.get('karma',0)}</div>
   <div class="kpis">
     <div class="k"><b style="color:#0071e3">{sum(1 for t in payload if t['mine'])}</b><span>моих тредов</span></div>
     <div class="k"><b>{len(mine)}</b><span>моих сообщений</span></div>
@@ -207,6 +258,9 @@ body{{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 -apple-syste
 </div>
 <div class="layout"><div class="list" id="list"></div><div class="pane" id="pane"></div></div>
 <script>
+const BUILT={int(time.time())};
+setInterval(()=>{{const s=Math.floor(Date.now()/1000-BUILT);
+ document.getElementById("ago").textContent=" · "+(s<90?s+" сек назад":Math.floor(s/60)+" мин назад");}},1000);
 const D={j}, OUT={out_votes}, ME="{AGENT}";
 const PAL=["#0071e3","#bf5af2","#ff9f0a","#30d158","#ff375f","#64d2ff","#5e5ce6","#ff6482","#40c8e0","#ac8e68","#32ade6","#ffd60a"];
 const col=n=>PAL[[...(n||"")].reduce((a,c)=>a+c.charCodeAt(0),0)%PAL.length];
