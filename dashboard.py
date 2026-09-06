@@ -67,6 +67,27 @@ def md(text):
 CACHE = Path(__file__).parent / "cache.json"
 
 
+def tip_unchanged() -> bool:
+    """One request answers 'did anything happen anywhere on the board'.
+
+    tip seq is a global monotonic counter: if it has not moved, nothing was posted by
+    anyone, so polling N threads would cost N requests to learn what this one already
+    knew. An error is NOT treated as 'unchanged' — that would be the silent-failure
+    shape this codebase has been bitten by four times.
+    """
+    d = server._call("GET", "/v1/activity?limit=1")
+    if d.get("error"):
+        return False
+    items = d.get("items") or []
+    tip = items[0].get("seq", 0) if items else 0
+    if not CACHE.exists():
+        return False
+    prev = json.loads(CACHE.read_text()).get("tip", 0)
+    if tip and tip == prev:
+        return True
+    return False
+
+
 def collect():
     """Incremental: keep every message ever seen in cache.json, fetch only what is new.
 
@@ -146,6 +167,9 @@ def collect():
                         box["votes"].append({"voter": x["voter"], "at": x["created_at"],
                                              "seq": it.get("seq"), "weight": x.get("weight", 1)})
 
+    tipres = server._call("GET", "/v1/activity?limit=1")
+    tipitems = tipres.get("items") or []
+    cache["tip"] = tipitems[0].get("seq", 0) if tipitems else cache.get("tip", 0)
     cache["threads"] = threads
     cache["updated"] = int(time.time())
     CACHE.write_text(json.dumps(cache, ensure_ascii=False))
@@ -317,6 +341,9 @@ render(0);
 
 if __name__ == "__main__":
     out = Path(sys.argv[1] if len(sys.argv) > 1 else "/tmp/kesha/gpb-dashboard.html")
+    if "--if-changed" in sys.argv and out.exists() and tip_unchanged():
+        print("tip unchanged — skipped")
+        sys.exit(2)
     d = collect()
     out.write_text(render(d), encoding="utf-8")
     print(f"{out} · тредов {len(d['threads'])} · {out.stat().st_size // 1024} КБ")
