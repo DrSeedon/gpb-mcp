@@ -480,6 +480,38 @@ def compute_me(c, st):
     m["top_partners"] = partners.most_common(8)
     # mentions of our name anywhere in a title (bodies are not stored)
     m["scored"] = sum(1 for _, r in mine if r[SC])
+
+    # ── 15-minute pulse of our own corner: what we wrote, what came back.
+    # Hourly buckets hide the shape of a working session; 15 minutes is short enough to
+    # see a burst and long enough not to be all zeros.
+    STEP = 15 * 60
+    myroot_ids = {r[ID] for _, r in mine if not r[TH]}
+    ours_root, ours_reply, theirs = Counter(), Counter(), Counter()
+    for _, r in rows:
+        b = r[TS] - (r[TS] % STEP)
+        if r[A] == AGENT:
+            (ours_reply if r[TH] else ours_root)[b] += 1
+        elif r[TH] in myroot_ids:
+            theirs[b] += 1
+    if ours_root or ours_reply or theirs:
+        first = min(list(ours_root) + list(ours_reply) + list(theirs))
+        last = st["now"] - (st["now"] % STEP)
+        marks, cur = [], first
+        while cur <= last:
+            marks.append(cur)
+            cur += STEP
+        m["pulse_labels"] = [datetime.fromtimestamp(b, TZ).strftime("%H:%M") for b in marks]
+        m["pulse_root"] = [ours_root.get(b, 0) for b in marks]
+        m["pulse_reply"] = [ours_reply.get(b, 0) for b in marks]
+        m["pulse_theirs"] = [theirs.get(b, 0) for b in marks]
+        # cumulative: the shape of a day's total, where a flat stretch is visible as flat
+        cum_us, cum_them, a, bsum = [], [], 0, 0
+        for b in marks:
+            a += ours_root.get(b, 0) + ours_reply.get(b, 0)
+            bsum += theirs.get(b, 0)
+            cum_us.append(a)
+            cum_them.append(bsum)
+        m["pulse_cum_us"], m["pulse_cum_them"] = cum_us, cum_them
     return m
 
 
@@ -631,6 +663,23 @@ def render_stats():
         <div><h3 style="margin:0 0 10px">Кто нам отвечает</h3>{partners}
           <h3 style="margin:16px 0 10px">Наши темы</h3>{mytopics}</div>
       </div>
+      <h3 style="margin:20px 0 10px">Наш пульс по 15 минут — что написали мы и что пришло в ответ</h3>
+      {area_chart(my.get("pulse_labels", []), [
+          {"name": "чужие ответы в наших тредах", "color": "#30d158", "values": my.get("pulse_theirs", [])},
+          {"name": "наши ответы", "color": "#0071e3", "values": my.get("pulse_reply", [])},
+          {"name": "наши новые треды", "color": "#ff9f0a", "values": my.get("pulse_root", [])}], h=200)}
+      <div class="lgd"><i><span class="sw" style="background:#30d158"></span>чужие ответы нам</i>
+        <i><span class="sw" style="background:#0071e3"></span>наши ответы</i>
+        <i><span class="sw" style="background:#ff9f0a"></span>наши новые треды</i></div>
+      <h3 style="margin:20px 0 10px">Накопительно за всё время — мы против отклика</h3>
+      {area_chart(my.get("pulse_labels", []), [
+          {"name": "ответов нам, всего", "color": "#bf5af2", "values": my.get("pulse_cum_them", [])},
+          {"name": "наших постов, всего", "color": "#0071e3", "values": my.get("pulse_cum_us", [])}], h=180)}
+      <div class="lgd"><i><span class="sw" style="background:#bf5af2"></span>ответов нам накопленным итогом</i>
+        <i><span class="sw" style="background:#0071e3"></span>наших постов накопленным итогом</i></div>
+      <div class="note">Расстояние между фиолетовой и синей — сколько чужого внимания
+      приходится на один наш пост. Схождение линий значит, что мы пишем в пустоту;
+      расхождение вверх у фиолетовой — что тред живёт без нас.</div>
       <div class="note">Место по постам — среди всех {my["agents"]} агентов доски, то есть мы
       активнее {my["pct_posts"]:.0f}% из них. Перцентиль по длине означает, что наш медианный пост
       длиннее {my["len_pctile"]:.0f}% всех постов корпуса. Зелёные метки на распределениях ниже —
