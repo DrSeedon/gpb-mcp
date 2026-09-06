@@ -58,7 +58,7 @@ def svg(w, h, body, vb=None):
             f'preserveAspectRatio="none" style="display:block">{body}</svg>')
 
 
-def area_chart(xs, series, h=190, unit=""):
+def area_chart(xs, series, h=190, unit="", bucket=""):
     """Hand the data to the client and let it draw at real pixel size.
 
     Rendering the SVG here meant preserveAspectRatio="none" and a stretched viewBox —
@@ -69,8 +69,8 @@ def area_chart(xs, series, h=190, unit=""):
     """
     if not series or len(series[0]["values"]) < 2:
         return '<div class="empty">мало точек</div>'
-    cfg = json.dumps({"labels": xs, "series": series, "unit": unit, "h": h},
-                     ensure_ascii=False).replace("'", "&#39;")
+    cfg = json.dumps({"labels": xs, "series": series, "unit": unit, "h": h,
+                      "bucket": bucket}, ensure_ascii=False).replace("'", "&#39;")
     return f"<div class='chart' style='height:{h}px' data-c='{cfg}'></div>"
 
 
@@ -663,18 +663,28 @@ def render_stats():
         <div><h3 style="margin:0 0 10px">Кто нам отвечает</h3>{partners}
           <h3 style="margin:16px 0 10px">Наши темы</h3>{mytopics}</div>
       </div>
-      <h3 style="margin:20px 0 10px">Наш пульс по 15 минут — что написали мы и что пришло в ответ</h3>
+      <h3 style="margin:20px 0 10px">Что писали МЫ — по 15 минут</h3>
       {area_chart(my.get("pulse_labels", []), [
-          {"name": "чужие ответы в наших тредах", "color": "#30d158", "values": my.get("pulse_theirs", [])},
           {"name": "наши ответы", "color": "#0071e3", "values": my.get("pulse_reply", [])},
-          {"name": "наши новые треды", "color": "#ff9f0a", "values": my.get("pulse_root", [])}], h=200)}
-      <div class="lgd"><i><span class="sw" style="background:#30d158"></span>чужие ответы нам</i>
-        <i><span class="sw" style="background:#0071e3"></span>наши ответы</i>
+          {"name": "наши новые треды", "color": "#ff9f0a", "values": my.get("pulse_root", [])}],
+          h=150, bucket="15 мин")}
+      <div class="lgd"><i><span class="sw" style="background:#0071e3"></span>наши ответы</i>
         <i><span class="sw" style="background:#ff9f0a"></span>наши новые треды</i></div>
+      <h3 style="margin:20px 0 10px">Что пришло в ОТВЕТ — по 15 минут, отдельная ось</h3>
+      {area_chart(my.get("pulse_labels", []), [
+          {"name": "чужие ответы в наших тредах", "color": "#30d158", "values": my.get("pulse_theirs", [])}],
+          h=150, bucket="15 мин")}
+      <div class="note" style="margin-bottom:14px">Две панели, а не одна: чужая реакция
+      кратно больше нашего действия (за день 202 ответа против 50 наших постов), и на общей
+      оси она читалась как наша активность. До 10:00 мы написали <b>2 поста</b> и получили
+      на них <b>33 ответа</b> — на совмещённом графике это выглядело как бурное утро.
+      Подпись под точкой — <b>начало</b> 15-минутной корзины: столбик «08:45» это интервал
+      08:45–09:00, а наш тред в нём создан в 08:54.</div>
       <h3 style="margin:20px 0 10px">Накопительно за всё время — мы против отклика</h3>
       {area_chart(my.get("pulse_labels", []), [
           {"name": "ответов нам, всего", "color": "#bf5af2", "values": my.get("pulse_cum_them", [])},
-          {"name": "наших постов, всего", "color": "#0071e3", "values": my.get("pulse_cum_us", [])}], h=180)}
+          {"name": "наших постов, всего", "color": "#0071e3", "values": my.get("pulse_cum_us", [])}],
+          h=180, bucket="15 мин")}
       <div class="lgd"><i><span class="sw" style="background:#bf5af2"></span>ответов нам накопленным итогом</i>
         <i><span class="sw" style="background:#0071e3"></span>наших постов накопленным итогом</i></div>
       <div class="note">Расстояние между фиолетовой и синей — сколько чужого внимания

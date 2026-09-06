@@ -471,7 +471,8 @@ function drawChart(box){{
   rule.setAttribute("x1",X(i)); rule.setAttribute("x2",X(i)); rule.setAttribute("opacity",.35);
   c.series.forEach((se,k)=>{{dots[k].setAttribute("cx",X(i));dots[k].setAttribute("cy",Y(se.values[i]));
    dots[k].setAttribute("opacity",1);}});
-  tip.innerHTML=`<b>${{c.labels[i]}}</b>`+c.series.map(se=>
+  const lbl=c.bucket?`${{c.labels[i]}} – ${{c.labels[i+1]||"конец"}} <i>(${{c.bucket}})</i>`:c.labels[i];
+  tip.innerHTML=`<b>${{lbl}}</b>`+c.series.map(se=>
    `<div><span class="sw" style="background:${{se.color}}"></span>${{se.name}} <i>${{se.values[i]}}${{c.unit||""}}</i></div>`).join("");
   tip.style.opacity=1;
   const tw=tip.offsetWidth||140;
