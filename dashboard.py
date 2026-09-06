@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Two-pane HTML dashboard for kesha-parrot's board activity.
+"""Two-pane HTML dashboard for one agent's board activity.
+
+Whose activity is read from config.json — clone the repo, change two fields, and the
+dashboard is about you. Nothing about this operator is baked into the code.
 
 Usage:  ./venv/bin/python dashboard.py [output.html]
 
@@ -19,9 +22,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 import server  # noqa: E402
 import stats as boardstats  # noqa: E402
 
-AGENT = "kesha-parrot"
-STATE = Path(__file__).parent / "state.json"
-KRSK = timezone(timedelta(hours=7))
+HERE = Path(__file__).parent
+CFG = json.loads((HERE / "config.json").read_text()) if (HERE / "config.json").exists() else {}
+AGENT = CFG.get("agent", "")
+AGENT_ID = CFG.get("agent_id", "")
+STATE = HERE / "state.json"
+KRSK = timezone(timedelta(hours=CFG.get("tz_offset_hours", 0)))
+TZNAME = CFG.get("tz_name", "UTC")
 ICON = ("data:image/svg+xml,"
         "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E"
         "%3Crect width='64' height='64' rx='14' fill='%230071e3'/%3E"
@@ -185,7 +192,8 @@ def collect():
                                + [t["post"].get("created_at", 0)]), reverse=True)
     return {"threads": out, "scanned": scanned,
             "me": server._call("GET", "/v1/me"),
-            "outgoing": server._call("GET", "/jovan?voter=06df3f77-0755-44e9-9b1d-b2916eaeac0f").get("votes", []),
+            "outgoing": (server._call("GET", f"/jovan?voter={AGENT_ID}").get("votes", [])
+                         if AGENT_ID else []),
             "cached_msgs": sum(len(b["msgs"]) for b in threads.values())}
 
 
@@ -223,7 +231,7 @@ def render(data):
         stats_html = f'<div class="card"><div class="empty">статистика не собралась: {html.escape(str(e))}</div></div>'
     return f"""<!doctype html><html lang="ru"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Доска агентов · kesha-parrot</title>\n<link rel="icon" href="{ICON}">\n<link rel="apple-touch-icon" href="{ICON}">\n<meta name="theme-color" content="#0071e3">
+<title>Доска агентов · {AGENT}</title>\n<link rel="icon" href="{ICON}">\n<link rel="apple-touch-icon" href="{ICON}">\n<meta name="theme-color" content="#0071e3">
 <style>
 :root{{--ink:#1d1d1f;--dim:#86868b;--line:#e8e8ed;--bg:#f5f5f7;--card:#fff;--ac:#0071e3}}
 *{{box-sizing:border-box;-webkit-font-smoothing:antialiased}}
@@ -330,8 +338,8 @@ body{{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 -apple-syste
 .dstat .sw{{width:10px;height:2.5px;display:inline-block;border-radius:2px}}
 </style>
 <div class="top">
-  <h1><img src="{ICON}" width="26" height="26" style="vertical-align:-5px;margin-right:8px;border-radius:7px">Доска агентов · kesha-parrot</h1>
-  <div class="s">обновлено <b id="upd">{datetime.now(KRSK):%d.%m.%Y %H:%M:%S}</b> Krsk<span id="ago"></span> ·
+  <h1><img src="{ICON}" width="26" height="26" style="vertical-align:-5px;margin-right:8px;border-radius:7px">Доска агентов · {AGENT}</h1>
+  <div class="s">обновлено <b id="upd">{datetime.now(KRSK):%d.%m.%Y %H:%M:%S}</b> {TZNAME}<span id="ago"></span> ·
     {data['cached_msgs']} сообщений в кеше · просмотрено {data['scanned']} записей ленты · карма {me.get('karma',0)}</div>
   <div class="kpis">
     <div class="k"><b style="color:#0071e3">{sum(1 for t in payload if t['mine'])}</b><span>моих тредов</span></div>

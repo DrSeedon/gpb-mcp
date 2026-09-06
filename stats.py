@@ -288,6 +288,9 @@ def compute_threads(c, st):
                        ("15-60м", 900, 3600), ("1-6ч", 3600, 21600), (">6ч", 21600, 1e12)]]
     st["lat_n"] = len(lat)
     st["lat_raw"] = lat
+    mylat = sorted(min(k[1][TS] for k in ks) - r[TS]
+                   for _, r, ks in mature if ks and r[A] == AGENT)
+    st["my_lat"] = quantile(mylat, .5) if mylat else None
 
     # thread leaderboard
     board = sorted(mature, key=lambda x: -len(x[2]))[:12]
@@ -328,8 +331,48 @@ def compute_agents(c, st):
         curve.append(len(seen))
     st["agents_curve"], st["agents_labels"] = curve, labels
 
-    # hour × top-agent heatmap
+    # ── per-agent cadence: the gap between one agent's own consecutive posts.
+    # The global gap distribution answers "how fast is the board"; this one answers
+    # "who is a firehose and who says one thing a day", which is a different question
+    # and the one that identifies spammers.
+    by_agent = defaultdict(list)
+    for _, r in rows:
+        by_agent[r[A]].append(r[TS])
+    cadence, cadence_names = [], []
+    for a, ts in by_agent.items():
+        if len(ts) < 3:                      # two posts give one gap: too noisy to rank
+            continue
+        ts.sort()
+        g = sorted(b - x for x, b in zip(ts, ts[1:]) if b >= x)
+        if g:
+            cadence.append(quantile(g, .5))
+            cadence_names.append(a)
+    st["cadence"] = cadence
+    st["my_cadence"] = (cadence[cadence_names.index(AGENT)]
+                        if AGENT in cadence_names else None)
+    pair = sorted(zip(cadence, cadence_names))
+    st["fastest"] = pair[:8]
+    st["slowest"] = pair[-8:][::-1]
+    st["cadence_n"] = len(cadence)
+
+    # ── what each agent does: start threads or answer them
+    reply_share, posts_per_agent = [], []
+    for a, n in per.items():
+        rr = sum(1 for _, r in rows if r[A] == a and r[TH])
+        posts_per_agent.append(n)
+        if n >= 3:
+            reply_share.append(100 * rr / n)
+    st["posts_per_agent"] = posts_per_agent
+    st["reply_share"] = reply_share
+    my_n = per.get(AGENT, 0)
+    my_rr = sum(1 for _, r in rows if r[A] == AGENT and r[TH])
+    st["my_posts_n"] = my_n or None
+    st["my_reply_share"] = (100 * my_rr / my_n) if my_n else None
+
+    # hour × top-agent heatmap — us always included, even outside the top
     top = [a for a, _ in per.most_common(12)]
+    if AGENT in per and AGENT not in top:
+        top = top[:11] + [AGENT]
     hrs = list(range(24))
     grid = [[0] * 24 for _ in top]
     for _, r in rows:
@@ -514,6 +557,18 @@ def render_stats():
     else:
         zipf = ""
 
+    zt = st["zipf"]
+    zipf_note = (
+        f'Агенты выстроены по активности: первый — самый громкий, дальше по убыванию, '
+        f'обе оси логарифмические. Читается как ответ на вопрос «сколько пишет N-й по счёту»: '
+        f'самый активный — {zt[0] if zt else 0} постов, десятый — {zt[9] if len(zt)>9 else 0}, '
+        f'сотый — {zt[99] if len(zt)>99 else 0}. Прямая линия на таком графике означала бы '
+        f'закон Ципфа: каждый следующий пишет во столько же раз меньше предыдущего — так '
+        f'устроены слова в языке и города по населению. Наш провал вниз на хвосте — это '
+        f'{st["one_post_agents"]} аккаунтов с единственным постом: их больше, чем предсказал '
+        f'бы закон, то есть доска не «естественное сообщество», а место, куда многие зашли '
+        f'один раз и ушли.')
+
     lq = st["lat_q"]
     lat_line = (f'p25 {human_dt(lq[0])} · <b>медиана {human_dt(lq[1])}</b> · '
                 f'p75 {human_dt(lq[2])} · p90 {human_dt(lq[3])} · n={st["lat_n"]}')
@@ -594,7 +649,9 @@ def render_stats():
         f'{100*st["alive2"]/max(1,st["mature_threads"]):.0f}%. Исключено {st["young_dropped"]} '
         f'тредов моложе {MATURITY_H} ч — они ещё собирают ответы, и без этой отсечки доля мёртвых завышается.', wide=True)}
   {card("Задержка первого ответа",
-        dist(st["lat_raw"], name="тредов", fmt="sec", xlog=True), lat_line, wide=True)}
+        dist(st["lat_raw"], name="тредов", fmt="sec", xlog=True, mine=st.get("my_lat")),
+        lat_line + (f' Зелёная метка — медиана по нашим тредам: {human_dt(st["my_lat"])}.'
+                    if st.get("my_lat") else ''), wide=True)}
   {card("Интервал между постами",
         dist(st.get("gaps_raw", []), name="интервалов", fmt="sec", xlog=True), gap_line +
         ". B=0 у пуассоновского потока, B→1 у пачечного: доска пишет очередями, а не ровно.", wide=True)}
@@ -610,7 +667,27 @@ def render_stats():
         f'Джини {st["gini"]:.2f} · верхние 10% агентов дают {st["top10pct_share"]:.0f}% постов · '
         f'топ-3 — {st["top3_share"]:.0f}% · агентов ровно с одним постом: {st["one_post_agents"]}')}
   {card("Кривая Лоренца — насколько неравномерно пишут", lorenz, lorenz_note)}
-  {card("Закон Ципфа, log-log", zipf, "прямая линия означала бы степенное распределение — как в естественных сообществах.")}
+  {card("Закон Ципфа: сколько пишет N-й по активности", zipf, zipf_note)}
+  {card("Ритм каждого агента: медиана паузы между его постами",
+        dist(st["cadence"], name="агентов", fmt="sec", xlog=True, mine=st.get("my_cadence")),
+        f'Прошлый график про доску целиком, этот — про каждого по отдельности: для каждого '
+        f'агента с тремя и более постами берётся медиана паузы между ЕГО соседними постами, '
+        f'и уже эти {st["cadence_n"]} чисел разложены в распределение. Левый край — те, кто '
+        f'строчит без пауз, правый — кто заходит раз в несколько часов. '
+        f'Самые частые: ' + ', '.join(f'@{esc(n)} {human_dt(v)}' for v, n in st["fastest"][:4])
+        + '. Самые редкие: ' + ', '.join(f'@{esc(n)} {human_dt(v)}' for v, n in st["slowest"][:3])
+        + '.' + (f' У нас {human_dt(st["my_cadence"])} — зелёная метка.'
+                 if st.get("my_cadence") else ''), wide=True)}
+  {card("Сколько постов у одного агента",
+        dist(st["posts_per_agent"], name="агентов", xlog=True, mine=st.get("my_posts_n")),
+        f'Каждая точка — один агент. Хвост слева: {st["one_post_agents"]} аккаунтов написали '
+        f'ровно один пост и замолчали. Справа единицы, у которых сотни. Это то же неравенство, '
+        f'что на кривой Лоренца, только видно, где именно стоит масса.', wide=True)}
+  {card("Разговаривает или вещает: доля ответов от всех постов агента",
+        dist(st["reply_share"], name="агентов", unit="%", mine=st.get("my_reply_share")),
+        '0% — агент только заводит свои треды и не отвечает никому. 100% — только отвечает '
+        'в чужих и ничего не начинает. Считаны агенты с тремя и более постами. '
+        'Горб у правого края означает, что доска в основном отвечает, а не публикуется.', wide=True)}
   {card("Темы", hbars(st["topics"]))}
   {card("Язык заголовков", hbars(st["lang"], colorize=False), "детект по алфавиту заголовка корневого поста.")}
   {card("Рост населения — уникальных агентов", area_chart(st["agents_labels"], [{"name": "агентов", "color": "#bf5af2", "values": st["agents_curve"]}]),

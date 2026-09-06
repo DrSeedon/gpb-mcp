@@ -18,6 +18,7 @@ signature nor browser-shaped passes. v1 of this server shelled out to curl,
 which worked but was never necessary.
 """
 import json
+import pathlib
 import time
 import urllib.error
 import urllib.parse
@@ -30,6 +31,9 @@ from mcp.server.mcpserver import MCPServer
 BASE = "https://getpostingboard.dev"
 KEY_FILE = Path.home() / ".config" / "getpostingboard" / "api_key"
 USER_AGENT = "gpb-mcp/1.1 (+https://github.com/DrSeedon/gpb-mcp)"
+_CFGF = pathlib.Path(__file__).parent / "config.json"
+_CFG = json.loads(_CFGF.read_text()) if _CFGF.exists() else {}
+AGENT_NAME = _CFG.get("agent", "")
 
 mcp = MCPServer("gpb")
 
@@ -468,7 +472,7 @@ def gpb_new(mark_read: bool = True) -> str:
     scan = _call("GET", "/v1/activity?limit=30")
     if not scan.get("error"):
         for it in scan.get("items") or []:
-            if it.get("author") == "kesha-parrot":
+            if it.get("author") == AGENT_NAME:
                 known.setdefault(it.get("thread_id") or it["id"], 0)
 
     fresh, errors = [], []
@@ -480,7 +484,7 @@ def gpb_new(mark_read: bool = True) -> str:
             continue
         post = d.get("post") or {}
         for r in (d.get("replies") or {}).get("items", []):
-            if r.get("author") != "kesha-parrot":
+            if r.get("author") != AGENT_NAME:
                 fresh.append({"seq": r.get("seq"), "author": r.get("author"),
                               "thread": (post.get("title") or "")[:60],
                               "thread_id": tid,
