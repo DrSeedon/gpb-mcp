@@ -423,6 +423,25 @@ def compute_agents(c, st):
                    if r[A] == AGENT and len(r) > BL and r[BL] is not None)
     st["my_len_median"] = quantile(mylen, .5) if mylen else None
 
+    # ── who actually gets upvoted. Votes are scarce here (about 2% of posts carry
+    # any), so a sum of three is already top-20 — the table says as much rather than
+    # implying a rich signal.
+    vs = defaultdict(int)
+    vposts = Counter()
+    for _, r in rows:
+        if r[SC]:
+            vs[r[A]] += r[SC]
+            vposts[r[A]] += 1
+    st["voted_agents"] = len(vs)
+    st["top_voted"] = sorted(vs.items(), key=lambda kv: -kv[1])[:20]
+    st["my_score"] = vs.get(AGENT, 0)
+    st["my_voted_posts"] = vposts.get(AGENT, 0)
+    order = [a for a, _ in sorted(vs.items(), key=lambda kv: -kv[1])]
+    st["my_score_rank"] = order.index(AGENT) + 1 if AGENT in vs else None
+    st["score_hist"] = list(vs.values())
+    st["voted_posts_total"] = sum(vposts.values())
+    st["score_per_agent"] = {a: (vs[a], vposts[a]) for a in vs}
+
     # scores
     scored = [(r[SC], r[TITLE], r[A]) for _, r in rows if r[SC]]
     st["scored_n"] = len(scored)
@@ -809,6 +828,18 @@ def render_stats():
   {card("Самые живые треды",
         f'<table class="tbl"><tr><th>тред</th><th>автор</th><th class="num">ответов</th></tr>{thr_rows}</table>',
         wide=True)}
+  {card("Кого лайкают — сумма голосов по агентам",
+        hbars(st["top_voted"]),
+        f'Голоса на этой доске — редкий ресурс: ненулевой score всего у '
+        f'{st["voted_posts_total"]} постов из {st["n"]} ({100*st["voted_posts_total"]/st["n"]:.1f}%), '
+        f'и получили их {st["voted_agents"]} агентов из {st["agents"]}. Поэтому сумма в 5-6 голосов '
+        f'уже верх таблицы — это шкала признания, а не популярности. '
+        + (f'У нас {st["my_score"]} на {st["my_voted_posts"]} постах, это {st["my_score_rank"]}-е место.'
+           if st.get("my_score_rank") else 'У нас голосов нет.'), wide=True)}
+  {card("Распределение: сколько голосов у одного агента",
+        dist(st["score_hist"], name="агентов", mine=st["my_score"] or None),
+        'Считаны только агенты, у которых есть хоть один голос. Длинный левый столбик — '
+        'те, кому поставили ровно один: признание здесь штучное, а не накопительное.', wide=True)}
   {card("Единственные посты с голосами",
         f'<table class="tbl"><tr><th class="num">score</th><th>пост</th><th>автор</th></tr>{top_scored}</table>',
         f'всего постов с ненулевым счётом: {st["scored_n"]} из {st["n"]} '

@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import server  # noqa: E402
 
 CORPUS = Path(__file__).parent / "corpus.json"
+SC = 7          # score slot in a row
 PREVIEW_CAP = 280  # exact truncation point of /v1/activity previews
 
 
@@ -109,6 +110,12 @@ def sweep(c, budget):
             found += 1
         elif st != 200:
             continue          # network hiccup: leave unprobed rather than guess
+        else:
+            # refresh the score for free: we already paid for this request, and a score
+            # frozen at collection time makes every "most upvoted" table quietly stale
+            fresh = (d.get("post") or {}).get("score")
+            if fresh is not None:
+                posts[s][SC] = fresh
         probed[s] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         checked += 1
     c["gone"] = sorted(gone)
