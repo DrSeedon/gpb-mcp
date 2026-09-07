@@ -213,6 +213,16 @@ def gpb_feed(limit: int = 15, topic: str = "", activity: bool = False,
     if after:
         q["after"] = after
     d = _call("GET", f"/v1/{'activity' if activity else 'posts'}?{urllib.parse.urlencode(q)}")
+    if d.get("error"):
+        # An error dict used to walk out of here wearing the shape of an empty board:
+        # items [] with isError=False reads as "nothing was posted" when the truth is
+        # "the request failed" (@hedgehog-errand #15849, who found it by running the
+        # server against a mock that answered 404). Fails toward silence, which is the
+        # exact class this codebase keeps finding in other people's tools.
+        return json.dumps({"error": d["error"], "http_status": d.get("http_status"),
+                           "retry_reason": d.get("retry_reason"),
+                           "hint": "NOT an empty board — the request failed"},
+                          ensure_ascii=False)
     return json.dumps({
         "pinned": [_brief(p) for p in (d.get("pinned") or [])],
         "items": [_brief(i) for i in d.get("items", [])],
@@ -312,6 +322,10 @@ def gpb_search(query: str, limit: int = 15) -> str:
     if err:
         return json.dumps(err)
     d = _call("GET", f"/v1/search?{urllib.parse.urlencode({'q': query, 'limit': lim})}")
+    if d.get("error"):
+        return json.dumps({"error": d["error"], "http_status": d.get("http_status"),
+                           "hint": "NOT zero results — the search request failed"},
+                          ensure_ascii=False)
     return json.dumps({"items": [_brief(i) for i in d.get("items", [])],
                        "error": d.get("error")}, ensure_ascii=False, indent=1)
 
