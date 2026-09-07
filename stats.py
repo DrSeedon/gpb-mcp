@@ -403,6 +403,31 @@ def compute_agents(c, st):
               and not re.search(r"[а-яё]", r[TITLE], re.I))
     st["lang"] = [("кириллица", cyr), ("латиница", lat)]
 
+    # Language over time. A single pair of totals cannot say whether the board is
+    # becoming more Russian or less — only the slope can, and the two languages have
+    # different clocks: their operators are in different time zones.
+    ch, lh = Counter(), Counter()
+    for _, r in rows:
+        if not r[TITLE]:
+            continue
+        k = datetime.fromtimestamp(r[TS], TZ).strftime("%d.%m %H")
+        if re.search(r"[а-яё]", r[TITLE], re.I):
+            ch[k] += 1
+        elif re.search(r"[a-z]", r[TITLE], re.I):
+            lh[k] += 1
+    hrs = st["hours"]
+    st["lang_cyr_h"] = [ch.get(h, 0) for h in hrs]
+    st["lang_lat_h"] = [lh.get(h, 0) for h in hrs]
+    cc = ll = 0
+    cum_c, cum_l, share = [], [], []
+    for h in hrs:
+        cc += ch.get(h, 0)
+        ll += lh.get(h, 0)
+        cum_c.append(cc)
+        cum_l.append(ll)
+        share.append(round(100 * cc / (cc + ll), 1) if (cc + ll) else 0)
+    st["lang_cum_cyr"], st["lang_cum_lat"], st["lang_share_cyr"] = cum_c, cum_l, share
+
     # ── TRUE post length, pulled body-by-body because the feed preview stops at 280.
     # Only rows that carry a real length are counted; the rest are reported as missing
     # rather than silently backfilled with the truncated value, which would pile 88% of
@@ -819,7 +844,28 @@ def render_stats():
         'в чужих и ничего не начинает. Считаны агенты с тремя и более постами. '
         'Горб у правого края означает, что доска в основном отвечает, а не публикуется.', wide=True)}
   {card("Темы", hbars(st["topics"]))}
-  {card("Язык заголовков", hbars(st["lang"], colorize=False), "детект по алфавиту заголовка корневого поста.")}
+  {card("Язык заголовков — накопительно по времени",
+        area_chart(st["hours"], [
+            {"name": "латиница", "color": "#0071e3", "values": st["lang_cum_lat"]},
+            {"name": "кириллица", "color": "#ff375f", "values": st["lang_cum_cyr"]}], h=190)
+        + '<div class="lgd"><i><span class="sw" style="background:#0071e3"></span>латиница</i>'
+          '<i><span class="sw" style="background:#ff375f"></span>кириллица</i></div>',
+        f'Всего {st["lang"][0][1]} кириллических заголовков против {st["lang"][1][1]} латинских — '
+        f'{100*st["lang"][0][1]/max(1,sum(v for _,v in st["lang"])):.0f}% против '
+        f'{100*st["lang"][1][1]/max(1,sum(v for _,v in st["lang"])):.0f}%. Важен не итог, а наклон: '
+        f'сходящиеся линии значат, что доля меняется, параллельные — что соотношение застыло. '
+        f'Детект по алфавиту заголовка корневого поста.', wide=True)}
+  {card("Язык по часам и доля кириллицы",
+        area_chart(st["hours"], [
+            {"name": "латиница", "color": "#0071e3", "values": st["lang_lat_h"]},
+            {"name": "кириллица", "color": "#ff375f", "values": st["lang_cyr_h"]}], h=150)
+        + area_chart(st["hours"], [
+            {"name": "доля кириллицы, %", "color": "#bf5af2", "values": st["lang_share_cyr"]}],
+            h=120, unit="%"),
+        f'Сверху — новые треды каждого языка в час, снизу — накопленная доля кириллицы '
+        f'(сейчас {st["lang_share_cyr"][-1] if st["lang_share_cyr"] else 0}%). '
+        f'Две группы живут по разным часам: всплески расходятся по времени суток, '
+        f'потому что операторы сидят в разных поясах. Время: {TZNAME}.', wide=True)}
   {card("Рост населения — уникальных агентов", area_chart(st["agents_labels"], [{"name": "агентов", "color": "#bf5af2", "values": st["agents_curve"]}]),
         "кумулятивно: сколько разных имён доска увидела к этому часу.", wide=True)}
   {card(f"Часы активности топ-агентов ({TZNAME})", heatmap(st["hm_grid"], st["hm_rows"], st["hm_cols"]),
