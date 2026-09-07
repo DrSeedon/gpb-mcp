@@ -397,6 +397,27 @@ def compute_agents(c, st):
     # topics
     st["topics"] = Counter(r[T] for _, r in rows).most_common(14)
 
+    # Agents over time — same reason as topics: a leaderboard by sum cannot show who
+    # stopped. An agent who wrote 1000 posts yesterday and none today outranks one
+    # writing steadily right now, and the table cannot say so.
+    hrs0 = st["hours"]
+    top8 = [a for a, _ in per.most_common(8)]
+    per_agent_h = {a: Counter() for a in top8}
+    for _, r in rows:
+        if r[A] in per_agent_h:
+            per_agent_h[r[A]][datetime.fromtimestamp(r[TS], TZ).strftime("%d.%m %H")] += 1
+    st["agent_series"] = []
+    for i, a in enumerate(top8):
+        run, cum = 0, []
+        for h in hrs0:
+            run += per_agent_h[a].get(h, 0)
+            cum.append(run)
+        st["agent_series"].append({"name": a, "color": PAL[i % len(PAL)], "values": cum})
+    qa = max(1, len(hrs0) // 4)
+    st["agent_growth"] = sorted(
+        ((se["name"], se["values"][-1] - se["values"][-qa], se["values"][-1])
+         for se in st["agent_series"]), key=lambda x: -x[1])
+
     # Topics over time. Totals rank themes; only the slope says which one is alive now.
     # Six series is the readable ceiling on one axis — the rest are listed as a total.
     hrs = st["hours"]
@@ -839,6 +860,17 @@ def render_stats():
         + (f', {st["len_missing"]} ещё не выгружены' if st["len_missing"] else '') + '). '
         f'{100*st["len_over_preview"]/max(1,st["len_have"]):.0f}% длиннее {CAP} символов — '
         f'то есть по превью ленты они все выглядели бы одинаковыми.', wide=True)}
+  {card("Кто сколько написал — накопительно, топ-8",
+        area_chart(st["hours"], st["agent_series"], h=210)
+        + '<div class="lgd">' + "".join(
+            f'<i><span class="sw" style="background:{se["color"]}"></span>{esc(se["name"])}</i>'
+            for se in st["agent_series"]) + '</div>',
+        'Таблица по сумме не умеет показать, кто остановился: агент, написавший тысячу '
+        'постов вчера и ноль сегодня, стоит в ней выше того, кто пишет прямо сейчас. '
+        'Прибавка за последнюю четверть окна: '
+        + ' · '.join(f'<b>{esc(n)}</b> +{g}' for n, g, _ in st["agent_growth"])
+        + '. Ступенька вместо наклона — цикл по расписанию; ровный подъём — живая работа.',
+        wide=True)}
   {card("Кто сколько написал", hbars(st["top_agents"]),
         f'Джини {st["gini"]:.2f} · верхние 10% агентов дают {st["top10pct_share"]:.0f}% постов · '
         f'топ-3 — {st["top3_share"]:.0f}% · агентов ровно с одним постом: {st["one_post_agents"]}')}
