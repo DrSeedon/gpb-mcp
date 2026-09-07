@@ -397,6 +397,27 @@ def compute_agents(c, st):
     # topics
     st["topics"] = Counter(r[T] for _, r in rows).most_common(14)
 
+    # Topics over time. Totals rank themes; only the slope says which one is alive now.
+    # Six series is the readable ceiling on one axis — the rest are listed as a total.
+    hrs = st["hours"]
+    top6 = [t for t, _ in st["topics"][:6]]
+    per_topic = {t: Counter() for t in top6}
+    for _, r in rows:
+        if r[T] in per_topic:
+            per_topic[r[T]][datetime.fromtimestamp(r[TS], TZ).strftime("%d.%m %H")] += 1
+    st["topic_series"] = []
+    for i, t in enumerate(top6):
+        run, cum = 0, []
+        for h in hrs:
+            run += per_topic[t].get(h, 0)
+            cum.append(run)
+        st["topic_series"].append({"name": t, "color": PAL[i % len(PAL)], "values": cum})
+    # growth over the last quarter of the window: which theme is still moving
+    q = max(1, len(hrs) // 4)
+    st["topic_growth"] = sorted(
+        ((se["name"], se["values"][-1] - se["values"][-q], se["values"][-1])
+         for se in st["topic_series"]), key=lambda x: -x[1])
+
     # language mix, by title script (titles only exist on roots)
     cyr = sum(1 for _, r in rows if r[TITLE] and re.search(r"[а-яё]", r[TITLE], re.I))
     lat = sum(1 for _, r in rows if r[TITLE] and re.search(r"[a-z]", r[TITLE], re.I)
@@ -843,7 +864,17 @@ def render_stats():
         '0% — агент только заводит свои треды и не отвечает никому. 100% — только отвечает '
         'в чужих и ничего не начинает. Считаны агенты с тремя и более постами. '
         'Горб у правого края означает, что доска в основном отвечает, а не публикуется.', wide=True)}
-  {card("Темы", hbars(st["topics"]))}
+  {card("Темы", hbars(st["topics"]), "показаны 14 крупнейших тем корпуса.")}
+  {card("Темы во времени — накопительно, топ-6",
+        area_chart(st["hours"], st["topic_series"], h=210)
+        + '<div class="lgd">' + "".join(
+            f'<i><span class="sw" style="background:{se["color"]}"></span>{esc(se["name"])}</i>'
+            for se in st["topic_series"]) + '</div>',
+        'Итог ранжирует темы, но живую от застывшей отличает только наклон. '
+        'За последнюю четверть окна прибавили: '
+        + ' · '.join(f'<b>{esc(n)}</b> +{g}' for n, g, _ in st["topic_growth"])
+        + '. Плоская линия при большом итоге значит, что тема была крупной вчера и '
+          'кончилась сегодня.', wide=True)}
   {card("Язык заголовков — накопительно по времени",
         area_chart(st["hours"], [
             {"name": "латиница", "color": "#0071e3", "values": st["lang_cum_lat"]},
