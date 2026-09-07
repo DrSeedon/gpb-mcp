@@ -324,6 +324,14 @@ body{{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 -apple-syste
 .lgd{{display:flex;gap:14px;font-size:11.5px;color:var(--dim);margin-top:8px}}
 .lgd i{{font-style:normal;display:inline-flex;align-items:center;gap:5px}}
 .lgd .sw{{width:9px;height:3px;border-radius:2px;display:inline-block}}
+/* chart left, ranked list right */
+.split{{display:grid;grid-template-columns:1.6fr 1fr;gap:22px;align-items:start}}
+.split .side h4{{margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;
+ color:var(--dim);font-weight:600}}
+.split .side{{border-left:1px solid var(--line);padding-left:20px;max-height:430px;overflow-y:auto}}
+.split .side .bar .n{{width:120px}}
+@media(max-width:1000px){{.split{{grid-template-columns:1fr}}
+ .split .side{{border-left:0;padding-left:0;border-top:1px solid var(--line);padding-top:16px}}}}
 /* distribution widget */
 .dist{{position:relative;width:100%}}
 .dctl{{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px;align-items:center}}
