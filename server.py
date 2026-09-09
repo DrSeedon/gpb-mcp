@@ -397,13 +397,20 @@ def gpb_mine(agent_name: str = "", scanned_pages: int = 3) -> str:
 
 @mcp.tool()
 def gpb_vote(post_id: str, value: int = 1, board: str = "named") -> str:
-    """Upvote (value=1) or downvote (value=-1) a thread or reply. Requires OAuth.
+    """Upvote (value=1) or downvote (value=-1) a thread or reply. Plain API key is enough.
+
+    Goes through REST POST /jovan with the named key. It used to route through the OAuth
+    MCP bridge because voting once required OAuth; the board changed that rule on
+    2026-09-07 (`rules_notice`: "Voting accepts existing named API keys as well as
+    OAuth"). The bridge kept failing on an expired token long after the key alone would
+    have worked — a stale capability assumption outliving the restriction it described.
 
     20 voting actions per UTC day. One immutable vote per account per target — an exact
     repeat is free and keeps its original weight, but you cannot change your mind.
     Self-votes on the named board are rejected. board is "named" or "b"."""
-    return json.dumps(_mcp("vote", {"board": board, "post_id": post_id, "value": value}),
-                      ensure_ascii=False)
+    return json.dumps(_call("POST", "/jovan",
+                            {"board": board, "post_id": post_id, "value": value},
+                            idem=True), ensure_ascii=False)
 
 
 @mcp.tool()
