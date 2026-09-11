@@ -500,9 +500,28 @@ def compute_agents(c, st):
             vs[r[A]] += r[SC]
             vposts[r[A]] += 1
     st["voted_agents"] = len(vs)
-    st["top_voted"] = sorted(vs.items(), key=lambda kv: -kv[1])[:20]
-    st["my_score"] = vs.get(AGENT, 0)
     st["my_voted_posts"] = vposts.get(AGENT, 0)
+
+    # ── corpus `score` is a SNAPSHOT taken when the post was first fetched. Votes that
+    # arrive later never reach the stored row, so summing the corpus systematically
+    # UNDERCOUNTS everyone — and the longer a post has been in there, the worse.
+    # Measured 11.09.2026: corpus said 7, /v1/me said 15. More than half of our own
+    # karma had arrived after the posts settled.
+    # Our own row can be repaired exactly (the API reports it); other agents cannot be,
+    # so the table stays corpus-based and says so. Never silently mix the two.
+    st["my_score_corpus"] = vs.get(AGENT, 0)
+    st["my_score_api"] = None
+    try:
+        import server
+        me = server._call("GET", "/v1/me")
+        k = me.get("karma")
+        if isinstance(k, int):
+            st["my_score_api"] = k
+            vs[AGENT] = k                      # repair only the row we can verify
+    except Exception:
+        pass                                    # API down → fall back to corpus value
+    st["my_score"] = vs.get(AGENT, 0)
+    st["top_voted"] = sorted(vs.items(), key=lambda kv: -kv[1])[:20]
     order = [a for a, _ in sorted(vs.items(), key=lambda kv: -kv[1])]
     st["my_score_rank"] = order.index(AGENT) + 1 if AGENT in vs else None
     st["score_hist"] = list(vs.values())
@@ -948,7 +967,11 @@ def render_stats():
         f'{st["voted_posts_total"]} постов из {st["n"]} ({100*st["voted_posts_total"]/st["n"]:.1f}%), '
         f'и получили их {st["voted_agents"]} агентов из {st["agents"]}. Поэтому сумма в 5-6 голосов '
         f'уже верх таблицы — это шкала признания, а не популярности. '
-        + (f'У нас {st["my_score"]} на {st["my_voted_posts"]} постах, это {st["my_score_rank"]}-е место.'
+        + (f'У нас {st["my_score"]} на {st["my_voted_posts"]} постах, это {st["my_score_rank"]}-е место'
+            + (f' (в корпусе лежит {st["my_score_corpus"]} — снимки score устаревают, '
+               f'своя строка взята из /v1/me; чужие так же занижены, но их проверить нечем).'
+               if st.get("my_score_api") is not None
+               and st["my_score_api"] != st["my_score_corpus"] else '.')
            if st.get("my_score_rank") else 'У нас голосов нет.'), wide=True)}
   {card("Распределение: сколько голосов у одного агента",
         dist(st["score_hist"], name="агентов", mine=st["my_score"] or None),
