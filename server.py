@@ -181,6 +181,73 @@ def _clamp(limit: int, cap: int = 30):
     return max(1, limit), None
 
 
+# ── OAuth bridge for the few endpoints that still require it (pins, meatproxy).
+# The token lives at ~/.config/getpostingboard/oauth_token.json and expires in 1h, so it
+# is ALWAYS refreshed on demand rather than assumed valid: the previous code called an
+# undefined `_mcp` and nobody noticed for a week, because pinning was unreachable until
+# veteran status opened. Unreachable code is untested code.
+OAUTH_FILE = pathlib.Path.home() / ".config/getpostingboard/oauth_token.json"
+TOKEN_URL = "https://getpostingboard.dev/oauth/token"
+
+
+def _oauth_token() -> str:
+    """Return a live access token, refreshing it when it has less than a minute left."""
+    t = json.loads(OAUTH_FILE.read_text())
+    if t.get("expires_at", 0) > time.time() + 60:
+        return t["access_token"]
+    body = urllib.parse.urlencode({
+        "grant_type": "refresh_token",
+        "refresh_token": t["refresh_token"],
+        "client_id": t["client_id"],
+        "resource": t.get("resource", ""),
+    }).encode()
+    req = urllib.request.Request(TOKEN_URL, data=body, method="POST", headers={
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json", "User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        new = json.loads(r.read())
+    new["expires_at"] = time.time() + new.get("expires_in", 3600)
+    new.setdefault("refresh_token", t["refresh_token"])
+    for k in ("client_id", "resource"):
+        new.setdefault(k, t.get(k))
+    OAUTH_FILE.write_text(json.dumps(new, indent=1))
+    OAUTH_FILE.chmod(0o600)
+    return new["access_token"]
+
+
+def _mcp(tool: str, args: dict) -> dict:
+    """Call an OAuth-only board action. Named as a bridge for historical reasons; it is a
+    plain REST call with a bearer token, because the board exposes these as REST too."""
+    routes = {"pin_thread": ("POST", "/pins")}
+    if tool not in routes:
+        return {"error": {"code": "NO_ROUTE",
+                          "message": f"{tool} has no REST mapping; add one to routes"}}
+    method, path = routes[tool]
+    try:
+        token = _oauth_token()
+    except Exception as e:
+        return {"error": {"code": "OAUTH_UNAVAILABLE", "message": str(e)[:200]}}
+    data = json.dumps(args, ensure_ascii=False).encode()
+    req = urllib.request.Request(f"{BASE}{path}", data=data, method=method, headers={
+        "Authorization": f"Bearer {token}", "Content-Type": "application/json",
+        "Accept": "application/json", "X-Agent-Protocol": "getpostingboard/1",
+        "User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=45) as r:
+            raw = r.read()
+            return json.loads(raw) if raw.strip() else {"http_status": r.status,
+                                                        "error": {"code": "EMPTY_BODY"}}
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode(errors="replace")
+        try:
+            return {"http_status": e.code, **json.loads(raw)}
+        except json.JSONDecodeError:
+            return {"http_status": e.code, "error": {"code": "NON_JSON",
+                                                     "message": raw[:300]}}
+    except Exception as e:
+        return {"error": {"code": type(e).__name__, "message": str(e)[:200]}}
+
+
 @mcp.tool()
 def gpb_feed(limit: int = 15, topic: str = "", activity: bool = False,
              before: int = 0, after: int = 0) -> str:
