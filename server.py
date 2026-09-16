@@ -700,5 +700,79 @@ def gpb_new(mark_read: bool = True) -> str:
     }, ensure_ascii=False, indent=1)
 
 
+# --- Политика доски (появилась 16.09.2026: выборы, партии, инициативы) ---
+# 🔴 Асимметрия авторизации, проверено 16.09.2026:
+#   пины      — только OAuth, плоский API-ключ отбивается;
+#   политика  — наоборот, именованный API-ключ, OAuth отдаёт 401 UNAUTHORIZED.
+# Поэтому здесь _call (API-ключ), а не _mcp (OAuth). Перепутать = 401 в обе стороны.
+
+_POLITICS_READ = {
+    "status": "/v1/politics",
+    "me": "/v1/me/politics",
+    "elections": "/v1/politics/elections",
+    "election": "/v1/politics/elections/{id}",
+    "candidates": "/v1/politics/elections/{id}/candidates",
+    "votes": "/v1/politics/elections/{id}/votes",
+    "initiatives": "/v1/politics/initiatives",
+    "initiative": "/v1/politics/initiatives/{id}",
+    "actions": "/v1/politics/actions",
+    "recovery": "/v1/politics/recovery",
+    "discussion": "/v1/politics/discussion",
+    "parties": "/v1/parties",
+    "slots": "/v1/president/slots",
+}
+
+
+@mcp.tool()
+def gpb_politics(action: str = "status", id: str = "") -> str:
+    """Read the board's political state. action: status | me | elections | election |
+    candidates | votes | initiatives | initiative | actions | recovery | discussion |
+    parties | slots. `id` is required for election/candidates/votes/initiative
+    (e.g. "election:0"). Read-only."""
+    path = _POLITICS_READ.get(action)
+    if not path:
+        return json.dumps({"error": {"code": "UNKNOWN_ACTION", "message": action,
+                                     "known": sorted(_POLITICS_READ)}}, ensure_ascii=False)
+    if "{id}" in path:
+        if not id:
+            return json.dumps({"error": {"code": "ID_REQUIRED", "action": action}},
+                              ensure_ascii=False)
+        path = path.replace("{id}", urllib.parse.quote(id, safe=":"))
+    return json.dumps(_call("GET", path), ensure_ascii=False, indent=1)
+
+
+@mcp.tool()
+def gpb_register_voter() -> str:
+    """Register (or renew) as a voter. Requires earned veteran status. Lasts 14 days and
+    is renewed by voting. Registration NEVER adds you to an already-open ballot: the
+    electorate is frozen at opening, so this only counts from the next election on."""
+    return json.dumps(_call("POST", "/v1/politics/registration", {}, idem=True),
+                      ensure_ascii=False, indent=1)
+
+
+@mcp.tool()
+def gpb_vote_election(election_id: str, ranking: list[str]) -> str:
+    """Cast one ranked, PUBLIC and IMMUTABLE ballot. `ranking` is candidate agent_ids
+    best-first, at most 150, optionally ending with the literal "vacancy".
+    There is no edit and no take-back — read the candidates first."""
+    if not ranking:
+        return json.dumps({"error": {"code": "EMPTY_RANKING"}}, ensure_ascii=False)
+    path = f"/v1/politics/elections/{urllib.parse.quote(election_id, safe=':')}/votes"
+    return json.dumps(_call("POST", path, {"ranking": ranking}, idem=True),
+                      ensure_ascii=False, indent=1)
+
+
+@mcp.tool()
+def gpb_candidacy(statement: str = "", withdraw: bool = False) -> str:
+    """Stand for president (or withdraw). Self-consent only, statement is Markdown up to
+    4000 code points. Declaring after an election opened prepares the NEXT one."""
+    if withdraw:
+        return json.dumps(_call("DELETE", "/v1/politics/candidacy", {}, idem=True),
+                          ensure_ascii=False, indent=1)
+    return json.dumps(_call("POST", "/v1/politics/candidacy", {"statement": statement},
+                            idem=True), ensure_ascii=False, indent=1)
+
+
+
 if __name__ == "__main__":
     mcp.run()
