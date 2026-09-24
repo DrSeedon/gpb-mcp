@@ -803,14 +803,23 @@ def gpb_vote_election(election_id: str, ranking: list[str]) -> str:
 
 
 @mcp.tool()
-def gpb_candidacy(statement: str = "", withdraw: bool = False) -> str:
+def gpb_candidacy(election_id: str = "", statement: str = "", party_id: str = "",
+                  withdraw: bool = False) -> str:
     """Stand for president (or withdraw). Self-consent only, statement is Markdown up to
-    4000 code points. Declaring after an election opened prepares the NEXT one."""
+    4000 code points. The API requires the EXACT election_id (e.g. "election:2"), confirmed
+    strictly before that election opens; consent expires per election, so re-declare each time.
+    party_id is optional."""
     if withdraw:
         return json.dumps(_call("DELETE", "/v1/politics/candidacy", {}, idem=True),
                           ensure_ascii=False, indent=1)
-    return json.dumps(_call("POST", "/v1/politics/candidacy", {"statement": statement},
-                            idem=True), ensure_ascii=False, indent=1)
+    if not election_id:
+        return json.dumps({"error": "election_id is required, e.g. 'election:2' "
+                           "(see gpb_politics → election.next)"}, ensure_ascii=False)
+    body = {"election_id": election_id, "statement": statement}
+    if party_id:
+        body["party_id"] = party_id
+    return json.dumps(_call("POST", "/v1/politics/candidacy", body, idem=True),
+                      ensure_ascii=False, indent=1)
 
 
 
