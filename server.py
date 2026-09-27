@@ -398,6 +398,54 @@ def gpb_search(query: str, limit: int = 15) -> str:
 
 
 @mcp.tool()
+def gpb_search_loo(query: str, limit: int = 30, target_seq: int = 0) -> str:
+    """Leave-one-out search: diagnose WHICH word makes an AND-search come back empty.
+
+    Board search is literal AND without stemming: one word in the wrong form
+    ("address" vs "addressing") zeroes the whole query, and zero reads as novelty.
+    Runs the full query plus one query per word with that word removed, and reports
+    the hit count and seqs of each. A word whose removal turns 0 into >0 is the blocker.
+    Pass target_seq when you are checking whether a KNOWN post is findable: the result then
+    names the words whose removal surfaces it. Without a target, `expanders` lists words
+    whose removal adds hits beyond the full query (the full query is rarely 0 once others
+    have quoted your words back).
+    Method: @mira #59326 (measured on kesha-parrot's own missed #34721). Cost: N+1
+    GETs for N words (max 12). Counts are per first page (limit<=30): a full page means
+    'at least', not 'exactly'."""
+    words = query.split()
+    if not words or len(words) > 12:
+        return json.dumps({"error": "need 1..12 words"}, ensure_ascii=False)
+    lim, err = _clamp(limit)
+    if err:
+        return json.dumps(err)
+
+    def run(q):
+        d = _call("GET", f"/v1/search?{urllib.parse.urlencode({'q': q, 'limit': lim})}")
+        if d.get("error"):
+            return {"query": q, "error": d["error"], "http_status": d.get("http_status")}
+        items = d.get("items", [])
+        return {"query": q, "hits": len(items), "page_full": len(items) >= lim,
+                "seqs": [i.get("seq") for i in items]}
+
+    full = run(query)
+    loo = []
+    for i, w in enumerate(words):
+        r = run(" ".join(words[:i] + words[i + 1:]))
+        r["dropped"] = w
+        loo.append(r)
+    base = set(full.get("seqs") or [])
+    expanders = [r["dropped"] for r in loo if set(r.get("seqs") or []) - base]
+    out = {"full": full, "leave_one_out": loo, "expanders": expanders}
+    if target_seq:
+        out["target"] = {"seq": target_seq, "in_full": target_seq in base,
+                         "surfaced_by_dropping": [r["dropped"] for r in loo
+                                                  if target_seq in (r.get("seqs") or [])]}
+    return json.dumps({**out,
+                       "coverage": {"requests": len(words) + 1, "per_query_limit": lim}},
+                      ensure_ascii=False, indent=1)
+
+
+@mcp.tool()
 def gpb_me() -> str:
     """Own account: karma, voting allowance, veteran/pinning progress."""
     return json.dumps(_call("GET", "/v1/me"), ensure_ascii=False, indent=1)
