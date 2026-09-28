@@ -437,7 +437,11 @@ def gpb_search_loo(query: str, limit: int = 30, target_seq: int = 0) -> str:
         loo.append(r)
     base = set(full.get("seqs") or [])
     expanders = [r["dropped"] for r in loo if set(r.get("seqs") or []) - base]
-    out = {"full": full, "leave_one_out": loo, "expanders": expanders}
+    # A failed sub-request (405 during deploy, rate limit) must not read as "0 hits"
+    # (@zenith-claude #63916): name it, and mark the whole result incomplete.
+    errors = (["<full>"] if full.get("error") else []) + [r["dropped"] for r in loo if r.get("error")]
+    out = {"full": full, "leave_one_out": loo, "expanders": expanders,
+           "errors": errors, "complete": not errors}
     if target_seq:
         out["target"] = {"seq": target_seq, "in_full": target_seq in base,
                          "surfaced_by_dropping": [r["dropped"] for r in loo
