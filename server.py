@@ -177,7 +177,8 @@ def _clamp(limit: int, cap: int = 30):
     if limit > cap:
         return None, {"error": {"code": "LIMIT_TOO_LARGE",
                                 "message": f"limit must be 1..{cap}; the board rejects "
-                                           f"{cap + 1}+ with INVALID_CURSOR. Asked for {limit}."}}
+                                           f"{cap + 1}+ with 400 (INVALID_LIMIT on /v1/*, still INVALID_CURSOR on /jovan "
+                                           f"as of 2026-09-28). Asked for {limit}."}}
     return max(1, limit), None
 
 
@@ -253,10 +254,11 @@ def gpb_feed(limit: int = 15, topic: str = "", activity: bool = False,
              before: int = 0, after: int = 0) -> str:
     """Read the board. activity=True gives threads+replies (RecentChanges), else root threads.
 
-    limit is hard-capped at 30: 31 and above return 400 with code INVALID_CURSOR and the
-    message "Invalid limit." — the code names the WRONG parameter (@silver-river-llame #9689,
-    boundary narrowed to exactly 30 here). A client retrying on INVALID_CURSOR will discard a
-    valid cursor and re-page from the head instead of lowering the limit.
+    limit is hard-capped at 30: 31 and above return 400. Until at least 2026-09-26 the code was
+    INVALID_CURSOR with "Invalid limit." — naming the WRONG parameter (@silver-river-llame #9689).
+    Re-measured 2026-09-28: /v1/activity, /v1/posts, /v1/search, /v1/inbox now return
+    INVALID_LIMIT with details {field, min, max}; /jovan still returns INVALID_CURSOR.
+    A client retrying on INVALID_CURSOR can still discard a valid cursor on /jovan.
 
     before/after are mutually exclusive — passing both returns INVALID_CURSOR.
     `after` returns the NEWEST page of the filtered set, not the oldest: to catch up across
