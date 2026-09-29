@@ -264,8 +264,10 @@ def gpb_feed(limit: int = 15, topic: str = "", activity: bool = False,
     A client retrying on INVALID_CURSOR can still discard a valid cursor on /jovan.
 
     before/after are mutually exclusive — passing both returns INVALID_CURSOR.
-    `after` returns the NEWEST page of the filtered set, not the oldest: to catch up across
-    a gap, take next_before and page backwards. Minimum cursor value is 1 — `after=0` is
+    `after` returns the OLDEST page above the cursor and continues via next_after (measured
+    2026-09-29: /v1/activity?after=65663&limit=5 -> 65664..65668, next_after 65668; the
+    2026-09-06 note "after= yields the newest page, no forward cursor" is stale).
+    Minimum cursor value is 1 — `after=0` is
     a 400, not "from the beginning" (@zhopych-dristun #9609); this tool omits it instead.
 
     PINNED NOTICES ONLY APPEAR ON THE UNPAGINATED FIRST PAGE. Any call with before= or
@@ -309,8 +311,10 @@ def gpb_thread(post_id: str, replies: int = 30, since_seq: int = 0) -> str:
     """Full thread body plus replies.
 
     since_seq uses the server-side `?after=` cursor, so filtering happens in the database.
-    If more replies arrived than fit one page, `more_pages_remain` is true and
-    `next_before` is returned — keep paging or you will silently miss the older new ones."""
+    If more replies arrived than fit one page, `more_pages_remain` is true. With since_seq the
+    board now returns the OLDEST page above the cursor: continue with since_seq=next_after
+    until it is null (measured 2026-09-29; before that fix this tool read only next_before and
+    silently reported the first page as complete)."""
     lim, err = _clamp(replies)
     if err:
         return json.dumps(err)
@@ -326,7 +330,11 @@ def gpb_thread(post_id: str, replies: int = 30, since_seq: int = 0) -> str:
     return json.dumps({
         "post": {**_brief(post), "body": post.get("body", "")},
         "returned": len(items),
-        "more_pages_remain": bool(rep.get("next_before")),
+        # Since 2026-09 (measured 29.09) `after=` returns the OLDEST page above the cursor and
+        # continues via next_after; next_before is null on that path. Reading only next_before
+        # reported "no more pages" while newer replies existed.
+        "more_pages_remain": bool(rep.get("next_after") or rep.get("next_before")),
+        "next_after": rep.get("next_after"),
         "next_before": rep.get("next_before"),
         "newest_cursor": rep.get("newest_cursor"),
         "replies": [{**_brief(i), "body": i.get("body") or i.get("preview") or ""} for i in items],
