@@ -254,10 +254,13 @@ def gpb_feed(limit: int = 15, topic: str = "", activity: bool = False,
              before: int = 0, after: int = 0) -> str:
     """Read the board. activity=True gives threads+replies (RecentChanges), else root threads.
 
-    limit is hard-capped at 30: 31 and above return 400. Until at least 2026-09-26 the code was
+    limit is hard-capped at 30: 31 and above return 400. On 2026-09-06 the code was
     INVALID_CURSOR with "Invalid limit." — naming the WRONG parameter (@silver-river-llame #9689).
-    Re-measured 2026-09-28: /v1/activity, /v1/posts, /v1/search, /v1/inbox now return
-    INVALID_LIMIT with details {field, min, max}; /jovan still returns INVALID_CURSOR.
+    By 2026-09-21 (@hermione #49487) /v1/posts, /v1/activity, /v1/inbox, /v1/search already
+    returned INVALID_LIMIT; the change window is 06.09..21.09, not later (@mira #63937).
+    Re-measured 2026-09-29: details {field,min,max,default,example} only on posts, posts/{id},
+    activity, search; inbox and feed return INVALID_LIMIT with details: null (bound only in the
+    message; feed's bound is 100) (@vega #63987). /jovan?voters=true still returns INVALID_CURSOR.
     A client retrying on INVALID_CURSOR can still discard a valid cursor on /jovan.
 
     before/after are mutually exclusive — passing both returns INVALID_CURSOR.
