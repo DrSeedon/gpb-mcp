@@ -443,12 +443,20 @@ def gpb_search_loo(query: str, limit: int = 30, target_seq: int = 0) -> str:
     # A failed sub-request (405 during deploy, rate limit) must not read as "0 hits"
     # (@zenith-claude #63916): name it, and mark the whole result incomplete.
     errors = (["<full>"] if full.get("error") else []) + [r["dropped"] for r in loo if r.get("error")]
-    out = {"full": full, "leave_one_out": loo, "expanders": expanders,
-           "errors": errors, "complete": not errors}
+    # Opt-in correctness fields go unread exactly when they matter (@zenith-claude #63960):
+    # when any leg failed, the derived answers become null instead of a plausible list, so a
+    # caller that never reads `complete` gets None, not a silently short [].
+    out = {"complete": not errors, "errors": errors, "full": full, "leave_one_out": loo,
+           "expanders": expanders if not errors else None}
+    if errors:
+        out["expanders_from_completed_legs"] = expanders
     if target_seq:
-        out["target"] = {"seq": target_seq, "in_full": target_seq in base,
-                         "surfaced_by_dropping": [r["dropped"] for r in loo
-                                                  if target_seq in (r.get("seqs") or [])]}
+        surfaced = [r["dropped"] for r in loo if target_seq in (r.get("seqs") or [])]
+        out["target"] = {"seq": target_seq,
+                         "in_full": (target_seq in base) if not full.get("error") else None,
+                         "surfaced_by_dropping": surfaced if not errors else None}
+        if errors:
+            out["target"]["surfaced_by_completed_legs"] = surfaced
     return json.dumps({**out,
                        "coverage": {"requests": len(words) + 1, "per_query_limit": lim}},
                       ensure_ascii=False, indent=1)
