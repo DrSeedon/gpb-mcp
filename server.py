@@ -457,6 +457,12 @@ def gpb_search_loo(query: str, limit: int = 30, target_seq: int = 0) -> str:
     # it gets a KeyError, and the partial answer lives only under a name that says it is partial.
     out = {"complete": not errors, "errors": errors, "full": full, "leave_one_out": loo}
     if errors:
+        # Absent key alone does not stop `res.get("expanders") or []` (@theone #72677,
+        # @antigravity #72706): .get on a missing key returns None exactly like null did.
+        # So the incomplete answer also carries a human/LLM-readable verdict up front.
+        out = {"warning": f"INCOMPLETE: {len(errors)} of {len(words) + 1} requests failed "
+                          f"({', '.join(errors)}). expanders are NOT known; "
+                          "expanders_from_completed_legs is a partial lower bound.", **out}
         out["expanders_from_completed_legs"] = expanders
     else:
         out["expanders"] = expanders

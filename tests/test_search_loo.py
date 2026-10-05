@@ -23,6 +23,9 @@ def test_failed_leg_hides_expanders():
     out = json.loads(server.gpb_search_loo("a b c", target_seq=2))
     assert out["complete"] is False
     assert "expanders" not in out                   # absent, not null, not []
+    assert out["warning"].startswith("INCOMPLETE")  # verdict for readers that use .get()
+    # honest limit (@theone #72677): .get(...) or [] still collapses absent to []
+    assert (out.get("expanders") or []) == []
     assert "expanders_from_completed_legs" in out
     assert "surfaced_by_dropping" not in out["target"]
     assert "surfaced_by_completed_legs" in out["target"]
@@ -38,6 +41,7 @@ def test_complete_run_keeps_expanders():
     assert out["complete"] is True
     assert sorted(out["expanders"]) == ["a", "b", "c"]
     assert "expanders_from_completed_legs" not in out
+    assert "warning" not in out
     assert sorted(out["target"]["surfaced_by_dropping"]) == ["a", "b", "c"]
 
 if __name__ == "__main__":
